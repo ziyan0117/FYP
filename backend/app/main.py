@@ -17,10 +17,13 @@ from .schemas import (
     CompanyOut,
     ArticleOut,
     CompanySentimentOut,
+    MarketSentimentOut,
     TrendingCompanyOut,
     SentimentHistoryPoint,
+    TopicOut,
 )
 from .aggregation import aggregate_company_sentiment, compute_daily_sentiment_series
+from .topics import cluster_topics
 
 
 @asynccontextmanager
@@ -101,6 +104,43 @@ def _company_sentiment_results(db: Session, company: Company, days: int | None =
     ]
 
 
+def _company_sentiment_results_between(
+    db: Session, company: Company, start: datetime | None, end: datetime | None
+) -> list[dict]:
+    """Same row shape as `_company_sentiment_results`, but bounded to a
+    `[start, end)` window rather than "since N days ago" -- used to pull the
+    *previous* window for a swing/`prev_score` comparison."""
+    query = (
+        db.query(SentimentResult, Article.published_at)
+        .join(Article, SentimentResult.article_id == Article.id)
+        .join(ArticleCompanyMap, ArticleCompanyMap.article_id == Article.id)
+        .filter(ArticleCompanyMap.company_id == company.id, SentimentResult.model_name == "finbert")
+    )
+    if start is not None:
+        query = query.filter(Article.published_at >= start)
+    if end is not None:
+        query = query.filter(Article.published_at < end)
+    rows = query.all()
+    return [
+        {"label": sr.label, "confidence": sr.confidence, "published_at": published_at}
+        for sr, published_at in rows
+    ]
+
+
+def _prev_window_score(db: Session, company: Company, days: int | None) -> float | None:
+    """The same aggregation, run over the window immediately preceding the
+    current `days` window (e.g. days=7 -> the 7 days before that), as of the
+    end of that earlier window. None when `days` is None -- an all-time
+    score has no well-defined "previous window" to compare against."""
+    if days is None:
+        return None
+    now = datetime.utcnow()
+    window_end = now - timedelta(days=days)
+    window_start = now - timedelta(days=days * 2)
+    prev_results = _company_sentiment_results_between(db, company, window_start, window_end)
+    return aggregate_company_sentiment(prev_results, as_of=window_end)["score"]
+
+
 @app.get("/companies/{ticker}/sentiment", response_model=CompanySentimentOut)
 def company_sentiment(
     ticker: str,
@@ -113,7 +153,46 @@ def company_sentiment(
     company = _get_company_or_404(db, ticker)
     results = _company_sentiment_results(db, company, days=days)
     agg = aggregate_company_sentiment(results)
-    return CompanySentimentOut(ticker=company.ticker, name=company.name, **agg)
+    prev_score = _prev_window_score(db, company, days)
+    return CompanySentimentOut(ticker=company.ticker, name=company.name, prev_score=prev_score, **agg)
+
+
+@app.get("/market/sentiment", response_model=MarketSentimentOut)
+def market_sentiment(
+    days: int | None = Query(default=None, ge=1, description="Only count articles from the last N days"),
+    db: Session = Depends(get_db),
+):
+    """Aggregated sentiment across the whole watchlist -- the number behind
+    Today's market-mood gauge. Same aggregate_company_sentiment maths as a
+    single company, just fed every company's results combined, so a company
+    with more (confidence- and recency-weighted) coverage naturally pulls
+    the market number harder than one with a single quiet article.
+
+    Runs one query per company rather than a single joined query -- fine at
+    watchlist scale (a handful of companies); worth revisiting if the
+    watchlist grows into the hundreds."""
+    companies = db.query(Company).all()
+    combined = []
+    for company in companies:
+        combined.extend(_company_sentiment_results(db, company, days=days))
+    agg = aggregate_company_sentiment(combined)
+
+    prev_score = None
+    if days is not None:
+        now = datetime.utcnow()
+        window_end = now - timedelta(days=days)
+        window_start = now - timedelta(days=days * 2)
+        prev_combined = []
+        for company in companies:
+            prev_combined.extend(_company_sentiment_results_between(db, company, window_start, window_end))
+        prev_score = aggregate_company_sentiment(prev_combined, as_of=window_end)["score"]
+
+    return MarketSentimentOut(
+        score=agg["score"],
+        article_count=agg["article_count"],
+        company_count=len(companies),
+        prev_score=prev_score,
+    )
 
 
 @app.get("/companies/{ticker}/sentiment/history", response_model=list[SentimentHistoryPoint])
@@ -159,6 +238,13 @@ def company_news(
         if sentiment:
             item.label = sentiment.label
             item.confidence = sentiment.confidence
+            item.prob_positive = sentiment.prob_positive
+            item.prob_neutral = sentiment.prob_neutral
+            item.prob_negative = sentiment.prob_negative
+        # This list is scoped to `company`, so it's at least linked to this
+        # ticker -- good enough for the news-feed card's chip without a
+        # second query per row. article_detail() below does the full lookup.
+        item.tickers = [company.ticker]
         out.append(item)
     return out
 
@@ -177,6 +263,16 @@ def article_detail(article_id: int, db: Session = Depends(get_db)):
     if sentiment:
         item.label = sentiment.label
         item.confidence = sentiment.confidence
+        item.prob_positive = sentiment.prob_positive
+        item.prob_neutral = sentiment.prob_neutral
+        item.prob_negative = sentiment.prob_negative
+    item.tickers = [
+        c.ticker
+        for c in db.query(Company)
+        .join(ArticleCompanyMap, ArticleCompanyMap.company_id == Company.id)
+        .filter(ArticleCompanyMap.article_id == article.id)
+        .all()
+    ]
     return item
 
 
@@ -206,3 +302,57 @@ def trending(
         .all()
     )
     return [TrendingCompanyOut(ticker=c.ticker, name=c.name, article_count=count) for c, count in rows]
+
+
+@app.get("/topics", response_model=list[TopicOut])
+def topics(
+    limit: int = 5,
+    days: int | None = Query(default=None, ge=1, description="Only cluster articles from the last N days"),
+    db: Session = Depends(get_db),
+):
+    """Trending topics -- a lightweight, no-external-dependency keyword
+    clustering over recently ingested headlines (see app/topics.py for the
+    method and its honest limits). `days` narrows the window the same way
+    as every other endpoint here."""
+    companies = db.query(Company).all()
+    ticker_by_company_id = {c.id: c.ticker for c in companies}
+
+    company_terms: set[str] = set()
+    for c in companies:
+        for term in [c.ticker, c.name, *c.alias_list()]:
+            company_terms.add(term.lower())
+            company_terms.update(term.lower().split())
+
+    query = (
+        db.query(Article, SentimentResult, ArticleCompanyMap.company_id)
+        .join(ArticleCompanyMap, ArticleCompanyMap.article_id == Article.id)
+        .outerjoin(
+            SentimentResult,
+            (SentimentResult.article_id == Article.id) & (SentimentResult.model_name == "finbert"),
+        )
+    )
+    cutoff = _days_cutoff(days)
+    if cutoff is not None:
+        query = query.filter(Article.published_at >= cutoff)
+    rows = query.all()
+
+    by_article: dict[int, dict] = {}
+    for article, sentiment, company_id in rows:
+        entry = by_article.setdefault(
+            article.id,
+            {
+                "id": article.id,
+                "headline": article.headline,
+                "snippet": article.snippet,
+                "tickers": [],
+                "label": sentiment.label if sentiment else None,
+                "confidence": sentiment.confidence if sentiment else None,
+                "published_at": article.published_at,
+            },
+        )
+        ticker = ticker_by_company_id.get(company_id)
+        if ticker and ticker not in entry["tickers"]:
+            entry["tickers"].append(ticker)
+
+    clustered = cluster_topics(list(by_article.values()), company_terms, limit=limit)
+    return [TopicOut(**t) for t in clustered]
