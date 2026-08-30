@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+python-dotenv>=1.0
+requests>=2.31
+pydantic>=2.6
+transformers>=4.40
+torch>=2.2
+pytest>=8.0

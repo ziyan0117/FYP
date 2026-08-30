@@ -1,0 +1,39 @@
+# ---- Python virtual environments ----
+# Never committed: these are machine-specific, huge (torch alone is
+# 100MB+ per venv), and fully reproducible from requirements.txt.
+venv/
+**/venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# ---- Secrets ----
+# .env holds real API keys; .env.example (the template, with no real
+# secrets) is explicitly kept.
+.env
+**/.env
+!.env.example
+!**/.env.example
+
+# ---- Generated data ----
+# The SQLite database is created locally by seed_companies.py / ingest.py;
+# it's output, not source, and will keep growing as you ingest more news.
+*.db
+*.sqlite3
+
+# ---- Node / Expo (frontend) ----
+node_modules/
+**/node_modules/
+.expo/
+**/.expo/
+dist/
+web-build/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# ---- OS junk ----
+.DS_Store
+Thumbs.db
