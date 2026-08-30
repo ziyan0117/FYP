@@ -4,8 +4,9 @@ FastAPI backend (report Chapter 4/5). Run:
 Then open http://127.0.0.1:8000/docs for interactive API docs (Swagger UI).
 """
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -58,18 +59,42 @@ def _get_company_or_404(db: Session, ticker: str) -> Company:
     return company
 
 
-def _company_sentiment_results(db: Session, company: Company) -> list[dict]:
+def _days_cutoff(days: int | None) -> datetime | None:
+    """Converts a `days` filter into a naive-UTC cutoff datetime for a SQL
+    `published_at >= cutoff` comparison.
+
+    Deliberately naive (datetime.utcnow(), not datetime.now(timezone.utc)):
+    SQLAlchemy's SQLite DateTime column strips tzinfo on write, storing just
+    the naive UTC wall-clock text (see the comment in aggregation.py's
+    _recency_weight -- same underlying SQLite behaviour). Binding an aware
+    cutoff here would compare against that naive text as strings and risk a
+    silent mismatch; using a naive cutoff keeps both sides in the exact same
+    format.
+    """
+    if days is None:
+        return None
+    return datetime.utcnow() - timedelta(days=days)
+
+
+def _company_sentiment_results(db: Session, company: Company, days: int | None = None) -> list[dict]:
     """Raw {label, confidence, published_at} rows for a company -- the shared
     input format both aggregate_company_sentiment() and
     compute_daily_sentiment_series() expect. Factored out since the plain
-    current-score endpoint and the new history endpoint both need it."""
-    rows = (
+    current-score endpoint and the new history endpoint both need it.
+
+    `days`, when given, restricts this to articles published in the last
+    `days` days -- this is what powers the adjustable day-range filter on
+    the Watchlist and company detail screens."""
+    query = (
         db.query(SentimentResult, Article.published_at)
         .join(Article, SentimentResult.article_id == Article.id)
         .join(ArticleCompanyMap, ArticleCompanyMap.article_id == Article.id)
         .filter(ArticleCompanyMap.company_id == company.id, SentimentResult.model_name == "finbert")
-        .all()
     )
+    cutoff = _days_cutoff(days)
+    if cutoff is not None:
+        query = query.filter(Article.published_at >= cutoff)
+    rows = query.all()
     return [
         {"label": sr.label, "confidence": sr.confidence, "published_at": published_at}
         for sr, published_at in rows
@@ -77,10 +102,16 @@ def _company_sentiment_results(db: Session, company: Company) -> list[dict]:
 
 
 @app.get("/companies/{ticker}/sentiment", response_model=CompanySentimentOut)
-def company_sentiment(ticker: str, db: Session = Depends(get_db)):
-    """Company-level aggregated sentiment score (Chapter 4/5 aggregation logic)."""
+def company_sentiment(
+    ticker: str,
+    days: int | None = Query(default=None, ge=1, description="Only count articles from the last N days"),
+    db: Session = Depends(get_db),
+):
+    """Company-level aggregated sentiment score (Chapter 4/5 aggregation logic).
+    `days` is optional -- omit it for the all-time score, or pass e.g. 7 to
+    match the mobile app's day-range filter."""
     company = _get_company_or_404(db, ticker)
-    results = _company_sentiment_results(db, company)
+    results = _company_sentiment_results(db, company, days=days)
     agg = aggregate_company_sentiment(results)
     return CompanySentimentOut(ticker=company.ticker, name=company.name, **agg)
 
@@ -90,16 +121,25 @@ def company_sentiment_history(ticker: str, days: int = 14, db: Session = Depends
     """Daily sentiment timeline for a company -- FR-12, feeds the mobile app's
     sentiment-over-time chart and Chapter 6.3's sensitivity evaluation."""
     company = _get_company_or_404(db, ticker)
+    # No day-filter needed on the underlying query here: compute_daily_sentiment_series
+    # already discards anything older than `days` itself when it buckets the results.
     results = _company_sentiment_results(db, company)
     return compute_daily_sentiment_series(results, days=days)
 
 
 @app.get("/companies/{ticker}/news", response_model=list[ArticleOut])
-def company_news(ticker: str, limit: int = 20, db: Session = Depends(get_db)):
-    """News feed for one company, most recent first, with sentiment attached."""
+def company_news(
+    ticker: str,
+    limit: int = 20,
+    days: int | None = Query(default=None, ge=1, description="Only include articles from the last N days"),
+    db: Session = Depends(get_db),
+):
+    """News feed for one company, most recent first, with sentiment attached.
+    `days` is optional -- omit it for the most recent `limit` articles regardless
+    of age, or pass e.g. 7 to match the mobile app's day-range filter."""
     company = _get_company_or_404(db, ticker)
 
-    rows = (
+    query = (
         db.query(Article, SentimentResult)
         .join(ArticleCompanyMap, ArticleCompanyMap.article_id == Article.id)
         .outerjoin(
@@ -107,10 +147,11 @@ def company_news(ticker: str, limit: int = 20, db: Session = Depends(get_db)):
             (SentimentResult.article_id == Article.id) & (SentimentResult.model_name == "finbert"),
         )
         .filter(ArticleCompanyMap.company_id == company.id)
-        .order_by(Article.published_at.desc())
-        .limit(limit)
-        .all()
     )
+    cutoff = _days_cutoff(days)
+    if cutoff is not None:
+        query = query.filter(Article.published_at >= cutoff)
+    rows = query.order_by(Article.published_at.desc()).limit(limit).all()
 
     out = []
     for article, sentiment in rows:
@@ -140,12 +181,26 @@ def article_detail(article_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/trending", response_model=list[TrendingCompanyOut])
-def trending(limit: int = 5, db: Session = Depends(get_db)):
-    """Trending companies by recent article volume (Chapter 3 SHOULD-HAVE feature)."""
+def trending(
+    limit: int = 5,
+    days: int | None = Query(default=None, ge=1, description="Only count articles from the last N days"),
+    db: Session = Depends(get_db),
+):
+    """Trending companies by recent article volume (Chapter 3 SHOULD-HAVE feature).
+
+    `days` is optional -- omit it to rank by all-time article volume, or pass
+    e.g. 7 to match the mobile app's day-range filter and rank by volume
+    within just that window."""
+    query = db.query(Company, func.count(ArticleCompanyMap.article_id).label("article_count")).join(
+        ArticleCompanyMap, ArticleCompanyMap.company_id == Company.id
+    )
+    cutoff = _days_cutoff(days)
+    if cutoff is not None:
+        query = query.join(Article, Article.id == ArticleCompanyMap.article_id).filter(
+            Article.published_at >= cutoff
+        )
     rows = (
-        db.query(Company, func.count(ArticleCompanyMap.article_id).label("article_count"))
-        .join(ArticleCompanyMap, ArticleCompanyMap.company_id == Company.id)
-        .group_by(Company.id)
+        query.group_by(Company.id)
         .order_by(func.count(ArticleCompanyMap.article_id).desc())
         .limit(limit)
         .all()

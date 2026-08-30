@@ -2,6 +2,7 @@ import { Link } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet } from 'react-native';
 
+import { DaysFilter } from '@/components/days-filter';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { CompanySentiment, getCompanySentiment, getTrending, TrendingCompany } from '@/constants/api';
@@ -20,27 +21,35 @@ function sentimentLabel(score: number | null): string {
   return 'Neutral';
 }
 
+function windowLabel(days: number): string {
+  return days === 1 ? 'the last day' : `the last ${days} days`;
+}
+
 type TrendingRow = TrendingCompany & { score: number | null };
 
 export default function TrendingScreen() {
+  const [days, setDays] = useState(7);
   const [items, setItems] = useState<TrendingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (selectedDays: number) => {
     setError(null);
     try {
-      // Backend already ranks by recent article volume -- ask for enough
-      // rows to cover the whole watchlist rather than its default top-5.
-      const trending = await getTrending(10);
+      // Backend ranks by article volume within the selected window -- ask
+      // for enough rows to cover the whole watchlist rather than its
+      // default top-5.
+      const trending = await getTrending(10, selectedDays);
       const sentiments = await Promise.all(
-        trending.map((t) => getCompanySentiment(t.ticker).catch<CompanySentiment>(() => ({
-          ticker: t.ticker,
-          name: t.name,
-          score: null,
-          article_count: t.article_count,
-        })))
+        trending.map((t) =>
+          getCompanySentiment(t.ticker, selectedDays).catch<CompanySentiment>(() => ({
+            ticker: t.ticker,
+            name: t.name,
+            score: null,
+            article_count: t.article_count,
+          }))
+        )
       );
       const merged: TrendingRow[] = trending.map((t, i) => ({ ...t, score: sentiments[i].score }));
       setItems(merged);
@@ -50,14 +59,24 @@ export default function TrendingScreen() {
   }, []);
 
   useEffect(() => {
-    load().finally(() => setLoading(false));
-  }, [load]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    load(days).finally(() => setLoading(false));
+  }, []);
+
+  const handleDaysChange = useCallback(
+    (newDays: number) => {
+      setDays(newDays);
+      setRefreshing(true);
+      load(newDays).finally(() => setRefreshing(false));
+    },
+    [load]
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await load();
+    await load(days);
     setRefreshing(false);
-  }, [load]);
+  }, [load, days]);
 
   if (loading) {
     return (
@@ -73,7 +92,8 @@ export default function TrendingScreen() {
       <ThemedText type="title" style={styles.header}>
         Trending
       </ThemedText>
-      <ThemedText style={styles.meta}>Ranked by recent news volume</ThemedText>
+      <DaysFilter value={days} onChange={handleDaysChange} />
+      <ThemedText style={styles.meta}>Ranked by news volume in {windowLabel(days)}</ThemedText>
 
       {error && <ThemedText style={styles.error}>⚠️ {error}</ThemedText>}
 
@@ -83,7 +103,15 @@ export default function TrendingScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         contentContainerStyle={styles.list}
         renderItem={({ item, index }) => (
-          <Link href={{ pathname: '/company/[ticker]', params: { ticker: item.ticker } }} asChild>
+          // Carry the currently-selected day range along to the company
+          // detail screen so it opens already matching the window you
+          // ranked this list by.
+          <Link
+            href={{
+              pathname: '/company/[ticker]',
+              params: { ticker: item.ticker, days: String(days) },
+            }}
+            asChild>
             <Pressable>
               <ThemedView style={styles.card}>
                 <ThemedText style={styles.rank}>#{index + 1}</ThemedText>
@@ -100,8 +128,8 @@ export default function TrendingScreen() {
                     </ThemedView>
                   </ThemedView>
                   <ThemedText style={styles.meta}>
-                    {item.article_count} article{item.article_count === 1 ? '' : 's'} in the last
-                    few days
+                    {item.article_count} article{item.article_count === 1 ? '' : 's'} in{' '}
+                    {windowLabel(days)}
                   </ThemedText>
                 </ThemedView>
               </ThemedView>
@@ -129,7 +157,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   header: {
-    marginBottom: 2,
+    marginBottom: 12,
   },
   list: {
     paddingTop: 12,

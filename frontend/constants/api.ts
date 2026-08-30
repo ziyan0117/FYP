@@ -87,16 +87,21 @@ export function getCompanies(): Promise<Company[]> {
   return getJson<Company[]>('/companies');
 }
 
-export function getCompanySentiment(ticker: string): Promise<CompanySentiment> {
-  return getJson<CompanySentiment>(`/companies/${ticker}/sentiment`);
+export function getCompanySentiment(ticker: string, days?: number): Promise<CompanySentiment> {
+  const query = days !== undefined ? `?days=${days}` : '';
+  return getJson<CompanySentiment>(`/companies/${ticker}/sentiment${query}`);
 }
 
-export function getCompanyNews(ticker: string, limit = 20): Promise<Article[]> {
-  return getJson<Article[]>(`/companies/${ticker}/news?limit=${limit}`);
+export function getCompanyNews(ticker: string, limit = 20, days?: number): Promise<Article[]> {
+  const daysParam = days !== undefined ? `&days=${days}` : '';
+  return getJson<Article[]>(`/companies/${ticker}/news?limit=${limit}${daysParam}`);
 }
 
-export function getTrending(limit = 5): Promise<TrendingCompany[]> {
-  return getJson<TrendingCompany[]>(`/trending?limit=${limit}`);
+export function getTrending(limit = 5, days?: number): Promise<TrendingCompany[]> {
+  // `days` is optional -- omit it to rank by all-time article volume, or
+  // pass e.g. 7 to match the Trending screen's adjustable day-range filter.
+  const daysParam = days !== undefined ? `&days=${days}` : '';
+  return getJson<TrendingCompany[]>(`/trending?limit=${limit}${daysParam}`);
 }
 
 export function getCompanySentimentHistory(

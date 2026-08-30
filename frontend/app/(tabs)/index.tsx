@@ -2,6 +2,7 @@ import { Link } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet } from 'react-native';
 
+import { DaysFilter } from '@/components/days-filter';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { CompanySentiment, getCompanies, getCompanySentiment } from '@/constants/api';
@@ -21,34 +22,50 @@ function sentimentLabel(score: number | null): string {
 }
 
 export default function HomeScreen() {
+  const [days, setDays] = useState(7);
   const [items, setItems] = useState<CompanySentiment[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (selectedDays: number) => {
     setError(null);
     try {
       const companies = await getCompanies();
       // Fetch every company's sentiment in parallel rather than one at a
       // time -- with a 10-company watchlist this is 10 quick requests
       // firing together instead of a slow sequential chain.
-      const results = await Promise.all(companies.map((c) => getCompanySentiment(c.ticker)));
+      const results = await Promise.all(
+        companies.map((c) => getCompanySentiment(c.ticker, selectedDays))
+      );
       setItems(results);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
+  // Initial load only -- day-range changes are handled by handleDaysChange
+  // below, which shows the lighter pull-to-refresh spinner instead of
+  // re-showing the full-screen loading state every time the filter changes.
   useEffect(() => {
-    load().finally(() => setLoading(false));
-  }, [load]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    load(days).finally(() => setLoading(false));
+  }, []);
+
+  const handleDaysChange = useCallback(
+    (newDays: number) => {
+      setDays(newDays);
+      setRefreshing(true);
+      load(newDays).finally(() => setRefreshing(false));
+    },
+    [load]
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await load();
+    await load(days);
     setRefreshing(false);
-  }, [load]);
+  }, [load, days]);
 
   if (loading) {
     return (
@@ -64,6 +81,7 @@ export default function HomeScreen() {
       <ThemedText type="title" style={styles.header}>
         Watchlist
       </ThemedText>
+      <DaysFilter value={days} onChange={handleDaysChange} />
 
       {error && <ThemedText style={styles.error}>⚠️ {error}</ThemedText>}
 
@@ -73,7 +91,17 @@ export default function HomeScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         contentContainerStyle={styles.list}
         renderItem={({ item }) => (
-          <Link href={{ pathname: '/company/[ticker]', params: { ticker: item.ticker } }} asChild>
+          // Carry the currently-selected day range along to the company
+          // detail screen (as a string route param -- expo-router params are
+          // always strings) so tapping into a company shows the same window
+          // you were just looking at on the Watchlist, instead of resetting
+          // to the detail screen's own default.
+          <Link
+            href={{
+              pathname: '/company/[ticker]',
+              params: { ticker: item.ticker, days: String(days) },
+            }}
+            asChild>
             <Pressable>
               <ThemedView style={styles.card}>
                 <ThemedView style={styles.cardRow}>
@@ -116,6 +144,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   list: {
+    paddingTop: 12,
     paddingBottom: 24,
     gap: 10,
   },

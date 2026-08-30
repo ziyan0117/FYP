@@ -10,6 +10,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 
+import { DaysFilter } from '@/components/days-filter';
 import { SentimentChart } from '@/components/sentiment-chart';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -49,10 +50,22 @@ function formatDate(iso: string): string {
   }
 }
 
+// Fallback used only when this screen is opened without a `days` param at
+// all (e.g. a future entry point that doesn't pass one yet).
+const DEFAULT_DAYS = 14;
+
 export default function CompanyDetailScreen() {
-  const { ticker } = useLocalSearchParams<{ ticker: string }>();
+  const { ticker, days: daysParam } = useLocalSearchParams<{ ticker: string; days?: string }>();
 
   const { width } = useWindowDimensions();
+  // Seed the filter from whatever day range the user had selected on the
+  // screen they tapped in from (Watchlist or Trending both pass `days` as a
+  // route param now), so e.g. picking "Today" and tapping into a company
+  // shows today's data immediately instead of resetting to a fixed default.
+  const [days, setDays] = useState(() => {
+    const parsed = daysParam ? Number(daysParam) : NaN;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAYS;
+  });
   const [sentiment, setSentiment] = useState<CompanySentiment | null>(null);
   const [articles, setArticles] = useState<Article[]>([]);
   const [history, setHistory] = useState<SentimentHistoryPoint[]>([]);
@@ -60,32 +73,45 @@ export default function CompanyDetailScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    if (!ticker) return;
-    setError(null);
-    try {
-      const [sentimentResult, newsResult, historyResult] = await Promise.all([
-        getCompanySentiment(ticker),
-        getCompanyNews(ticker),
-        getCompanySentimentHistory(ticker, 14),
-      ]);
-      setSentiment(sentimentResult);
-      setArticles(newsResult);
-      setHistory(historyResult);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [ticker]);
+  const load = useCallback(
+    async (selectedDays: number) => {
+      if (!ticker) return;
+      setError(null);
+      try {
+        const [sentimentResult, newsResult, historyResult] = await Promise.all([
+          getCompanySentiment(ticker, selectedDays),
+          getCompanyNews(ticker, 20, selectedDays),
+          getCompanySentimentHistory(ticker, selectedDays),
+        ]);
+        setSentiment(sentimentResult);
+        setArticles(newsResult);
+        setHistory(historyResult);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [ticker]
+  );
 
   useEffect(() => {
-    load().finally(() => setLoading(false));
-  }, [load]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    load(days).finally(() => setLoading(false));
+  }, [ticker]);
+
+  const handleDaysChange = useCallback(
+    (newDays: number) => {
+      setDays(newDays);
+      setRefreshing(true);
+      load(newDays).finally(() => setRefreshing(false));
+    },
+    [load]
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await load();
+    await load(days);
     setRefreshing(false);
-  }, [load]);
+  }, [load, days]);
 
   return (
     <ThemedView style={styles.container}>
@@ -106,6 +132,7 @@ export default function CompanyDetailScreen() {
             <ThemedView style={styles.headerBlock}>
               <ThemedText type="title">{sentiment?.name ?? ticker}</ThemedText>
               {error && <ThemedText style={styles.error}>⚠️ {error}</ThemedText>}
+              <DaysFilter value={days} onChange={handleDaysChange} />
               {sentiment && (
                 <ThemedView style={styles.scoreRow}>
                   <ThemedView
@@ -121,7 +148,7 @@ export default function CompanyDetailScreen() {
                 </ThemedView>
               )}
               <ThemedText type="subtitle" style={styles.chartHeading}>
-                Last 14 days
+                Last {days} days
               </ThemedText>
               <SentimentChart data={history} width={width - 32} />
               <ThemedText type="subtitle" style={styles.newsHeading}>
