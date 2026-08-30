@@ -53,6 +53,10 @@ export type CompanySentiment = {
   // figures. null when `days` wasn't passed (no well-defined prior window
   // for an all-time score).
   prev_score: number | null;
+  // How many articles prev_score is built from -- a swing built from a
+  // handful of articles is noise, not signal (see aggregation.py: a
+  // single article always aggregates to exactly +-1.0).
+  prev_article_count: number;
 };
 
 export type MarketSentiment = {

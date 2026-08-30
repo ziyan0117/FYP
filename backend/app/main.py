@@ -127,18 +127,19 @@ def _company_sentiment_results_between(
     ]
 
 
-def _prev_window_score(db: Session, company: Company, days: int | None) -> float | None:
+def _prev_window_agg(db: Session, company: Company, days: int | None) -> dict:
     """The same aggregation, run over the window immediately preceding the
     current `days` window (e.g. days=7 -> the 7 days before that), as of the
-    end of that earlier window. None when `days` is None -- an all-time
-    score has no well-defined "previous window" to compare against."""
+    end of that earlier window. {"score": None, "article_count": 0} when
+    `days` is None -- an all-time score has no well-defined "previous
+    window" to compare against."""
     if days is None:
-        return None
+        return {"score": None, "article_count": 0}
     now = datetime.utcnow()
     window_end = now - timedelta(days=days)
     window_start = now - timedelta(days=days * 2)
     prev_results = _company_sentiment_results_between(db, company, window_start, window_end)
-    return aggregate_company_sentiment(prev_results, as_of=window_end)["score"]
+    return aggregate_company_sentiment(prev_results, as_of=window_end)
 
 
 @app.get("/companies/{ticker}/sentiment", response_model=CompanySentimentOut)
@@ -153,8 +154,14 @@ def company_sentiment(
     company = _get_company_or_404(db, ticker)
     results = _company_sentiment_results(db, company, days=days)
     agg = aggregate_company_sentiment(results)
-    prev_score = _prev_window_score(db, company, days)
-    return CompanySentimentOut(ticker=company.ticker, name=company.name, prev_score=prev_score, **agg)
+    prev_agg = _prev_window_agg(db, company, days)
+    return CompanySentimentOut(
+        ticker=company.ticker,
+        name=company.name,
+        prev_score=prev_agg["score"],
+        prev_article_count=prev_agg["article_count"],
+        **agg,
+    )
 
 
 @app.get("/market/sentiment", response_model=MarketSentimentOut)

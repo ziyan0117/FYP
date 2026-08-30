@@ -29,6 +29,7 @@ export default function WatchlistScreen() {
             score: null,
             article_count: 0,
             prev_score: null,
+            prev_article_count: 0,
           }))
         )
       );

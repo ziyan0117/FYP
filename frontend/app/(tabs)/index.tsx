@@ -45,14 +45,30 @@ export default function TodayScreen() {
             score: null,
             article_count: 0,
             prev_score: null,
+            prev_article_count: 0,
           }))
         )
       );
       setMarket(marketResult);
       setRows(sentiments.map((s) => ({ ...s, articleTotal: s.article_count })));
 
+      // A single article always aggregates to exactly +-1.0 (a weighted
+      // average of one value is that value) -- without a sample-size floor,
+      // "biggest swings" is really just "whichever ticker happened to get
+      // one strongly-worded headline", not a meaningful trend. Require a
+      // couple of articles on both sides of the comparison before a ticker
+      // is eligible; this can legitimately leave the section thin (or
+      // empty, which the screen already handles) on a lightly-ingested
+      // watchlist, which is more honest than surfacing noise as a signal.
+      const MIN_ARTICLES_FOR_SWING = 2;
       const withDelta = sentiments
-        .filter((s) => s.score !== null && s.prev_score !== null)
+        .filter(
+          (s) =>
+            s.score !== null &&
+            s.prev_score !== null &&
+            s.article_count >= MIN_ARTICLES_FOR_SWING &&
+            s.prev_article_count >= MIN_ARTICLES_FOR_SWING
+        )
         .map((s) => ({ ticker: s.ticker, delta: s.score! - s.prev_score! }))
         .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
         .slice(0, 3);

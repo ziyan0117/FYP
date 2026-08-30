@@ -51,6 +51,11 @@ class CompanySentimentOut(BaseModel):
     # swing figures on the Today digest. None when `days` wasn't given
     # (an all-time score has no well-defined "previous window").
     prev_score: float | None = None
+    # How many articles that prev_score is built from -- callers ranking by
+    # swing size should treat a swing built from a handful of articles as
+    # noise, not signal (a single article always aggregates to exactly
+    # +-1.0, which otherwise dominates a naive "biggest |delta|" sort).
+    prev_article_count: int = 0
 
 
 class MarketSentimentOut(BaseModel):

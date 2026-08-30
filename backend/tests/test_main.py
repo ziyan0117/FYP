@@ -82,13 +82,16 @@ def test_company_sentiment_prev_score_reflects_prior_window(client):
     assert body["score"] > 0  # recent window is positive
     assert body["prev_score"] is not None
     assert body["prev_score"] < 0  # previous window was the negative article
+    assert body["prev_article_count"] == 1  # the one negative article, 10 days ago
 
 
 def test_company_sentiment_prev_score_is_none_without_days(client):
     _seed(client)
     r = client.get("/companies/NVDA/sentiment")
     assert r.status_code == 200
-    assert r.json()["prev_score"] is None
+    body = r.json()
+    assert body["prev_score"] is None
+    assert body["prev_article_count"] == 0
 
 
 def test_market_sentiment_combines_the_whole_watchlist(client):

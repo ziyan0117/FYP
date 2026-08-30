@@ -28,6 +28,7 @@ export default function TrendingScreen() {
           score: null,
           article_count: t.article_count,
           prev_score: null,
+          prev_article_count: 0,
         }))
       )
     );
