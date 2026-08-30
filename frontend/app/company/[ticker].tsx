@@ -1,19 +1,12 @@
-import { Stack, useLocalSearchParams } from 'expo-router';
-import * as WebBrowser from 'expo-web-browser';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  FlatList,
-  Pressable,
-  RefreshControl,
-  StyleSheet,
-  useWindowDimensions,
-} from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { DaysFilter } from '@/components/days-filter';
-import { SentimentChart } from '@/components/sentiment-chart';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
+import { Chip } from '@/components/finpulse/Chip';
+import { DayByDayChart, Gauge, SplitBar } from '@/components/finpulse/DataViz';
+import { ArrowLeftIcon } from '@/components/finpulse/icons';
+import { IconButton } from '@/components/finpulse/IconButton';
 import {
   Article,
   CompanySentiment,
@@ -22,239 +15,182 @@ import {
   getCompanySentiment,
   getCompanySentimentHistory,
 } from '@/constants/api';
+import { effectiveLabel } from '@/constants/copy';
+import { Colors, Fonts, formatDelta, formatScore, labelFromBackend, sentimentLabel } from '@/constants/finpulse-theme';
+import { useAppState } from '@/contexts/app-state';
 
-function sentimentColor(score: number | null): string {
-  if (score === null) return '#888888';
-  if (score > 0.15) return '#2e7d32';
-  if (score < -0.15) return '#c62828';
-  return '#f9a825';
+const DAYS = 7;
+const HISTORY_DAYS = 14;
+
+export default function CompanyDetailScreen() {
+  const { ticker } = useLocalSearchParams<{ ticker: string }>();
+  const { tickers, setTickers } = useAppState();
+  const [sentiment, setSentiment] = useState<CompanySentiment | null>(null);
+  const [history, setHistory] = useState<SentimentHistoryPoint[]>([]);
+  const [articles, setArticles] = useState<Article[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!ticker) return;
+    const [sentimentResult, historyResult, newsResult] = await Promise.all([
+      getCompanySentiment(ticker, DAYS),
+      getCompanySentimentHistory(ticker, HISTORY_DAYS),
+      getCompanyNews(ticker, 6, DAYS),
+    ]);
+    setSentiment(sentimentResult);
+    setHistory(historyResult);
+    setArticles(newsResult);
+  }, [ticker]);
+
+  useEffect(() => {
+    setLoading(true);
+    load().finally(() => setLoading(false));
+  }, [load]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }, [load]);
+
+  const saved = !tickers || tickers.includes(ticker ?? '');
+  const toggleSaved = () => {
+    if (!ticker) return;
+    const base = tickers ?? [];
+    setTickers(saved ? base.filter((t) => t !== ticker) : [...base, ticker]);
+  };
+
+  const label = sentimentLabel(sentiment?.score ?? null);
+  const delta =
+    sentiment?.score !== null && sentiment?.score !== undefined && sentiment?.prev_score !== null && sentiment?.prev_score !== undefined
+      ? sentiment.score - sentiment.prev_score
+      : null;
+  const oldestDate = history[0]?.date;
+  const newestDate = history[history.length - 1]?.date;
+  const gapDays = history.filter((p) => p.score === null).map((p) => p.date.slice(5));
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <View style={styles.header}>
+        <IconButton onPress={() => router.back()}>
+          <ArrowLeftIcon color={Colors.text} />
+        </IconButton>
+        <Text style={styles.headerTitle}>
+          {ticker} · {sentiment?.name ?? ''}
+        </Text>
+        <View style={{ flex: 1 }} />
+        <Pressable onPress={toggleSaved} style={styles.savedBtn}>
+          <Text style={styles.savedText}>{saved ? 'SAVED' : 'SAVE'}</Text>
+        </Pressable>
+      </View>
+
+      {loading ? (
+        <View style={styles.centered}>
+          <ActivityIndicator color={Colors.text} />
+        </View>
+      ) : (
+        <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.text} />}>
+          <View style={styles.section}>
+            <Text style={styles.kicker}>MOOD · LAST {DAYS} DAYS</Text>
+            <View style={styles.moodRow}>
+              <Text style={styles.moodScore}>{formatScore(sentiment?.score ?? null)}</Text>
+              <View style={{ paddingBottom: 6 }}>
+                <Text style={styles.moodPhrase}>{label.toUpperCase()}</Text>
+                <Text style={styles.moodMeta}>
+                  {sentiment?.article_count ?? 0} article{sentiment?.article_count === 1 ? '' : 's'}
+                  {delta !== null ? ` · ${formatDelta(delta)} vs last window` : ''}
+                </Text>
+              </View>
+            </View>
+            <Gauge score={sentiment?.score ?? null} height={26} labels={['−1', '0', '+1']} />
+          </View>
+
+          <View style={styles.section}>
+            <View style={styles.rowBetween}>
+              <Text style={styles.kicker}>DAY BY DAY</Text>
+              <Text style={styles.metaSmall}>{HISTORY_DAYS} days</Text>
+            </View>
+            <DayByDayChart points={history} />
+            <View style={styles.rowBetween}>
+              <Text style={styles.axisLabel}>{oldestDate ? formatShort(oldestDate) : ''}</Text>
+              {gapDays.length > 0 && (
+                <Text style={styles.axisLabel}>no news {gapDays.join(', ')}</Text>
+              )}
+              <Text style={styles.axisLabel}>{newestDate ? formatShort(newestDate) : ''}</Text>
+            </View>
+          </View>
+
+          <Text style={styles.headlinesKicker}>HEADLINES</Text>
+          {articles.map((a) => {
+            const eff = effectiveLabel(a.label, a.confidence);
+            return (
+              <Pressable key={a.id} onPress={() => router.push(`/article/${a.id}`)} style={styles.articleRow}>
+                <View style={styles.articleTop}>
+                  <Chip label={labelFromBackend(eff)} size="small" />
+                  <Text style={styles.articleMeta}>
+                    {a.source} · {formatTime(a.published_at)}
+                  </Text>
+                </View>
+                <Text style={styles.headline}>{a.headline}</Text>
+                {a.prob_positive !== null && a.prob_neutral !== null && a.prob_negative !== null && (
+                  <SplitBar pos={a.prob_positive * 100} neu={a.prob_neutral * 100} neg={a.prob_negative * 100} height={5} />
+                )}
+              </Pressable>
+            );
+          })}
+          {articles.length === 0 && <Text style={styles.emptyNote}>No articles ingested for {ticker} yet.</Text>}
+          <View style={{ height: 24 }} />
+        </ScrollView>
+      )}
+    </SafeAreaView>
+  );
 }
 
-function sentimentLabel(score: number | null): string {
-  if (score === null) return 'No data';
-  if (score > 0.15) return 'Positive';
-  if (score < -0.15) return 'Negative';
-  return 'Neutral';
-}
-
-function formatDate(iso: string): string {
+function formatShort(iso: string): string {
   try {
-    return new Date(iso).toLocaleString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
   } catch {
     return iso;
   }
 }
 
-// Fallback used only when this screen is opened without a `days` param at
-// all (e.g. a future entry point that doesn't pass one yet).
-const DEFAULT_DAYS = 14;
-
-export default function CompanyDetailScreen() {
-  const { ticker, days: daysParam } = useLocalSearchParams<{ ticker: string; days?: string }>();
-
-  const { width } = useWindowDimensions();
-  // Seed the filter from whatever day range the user had selected on the
-  // screen they tapped in from (Watchlist or Trending both pass `days` as a
-  // route param now), so e.g. picking "Today" and tapping into a company
-  // shows today's data immediately instead of resetting to a fixed default.
-  const [days, setDays] = useState(() => {
-    const parsed = daysParam ? Number(daysParam) : NaN;
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAYS;
-  });
-  const [sentiment, setSentiment] = useState<CompanySentiment | null>(null);
-  const [articles, setArticles] = useState<Article[]>([]);
-  const [history, setHistory] = useState<SentimentHistoryPoint[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(
-    async (selectedDays: number) => {
-      if (!ticker) return;
-      setError(null);
-      try {
-        const [sentimentResult, newsResult, historyResult] = await Promise.all([
-          getCompanySentiment(ticker, selectedDays),
-          getCompanyNews(ticker, 20, selectedDays),
-          getCompanySentimentHistory(ticker, selectedDays),
-        ]);
-        setSentiment(sentimentResult);
-        setArticles(newsResult);
-        setHistory(historyResult);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    },
-    [ticker]
-  );
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    load(days).finally(() => setLoading(false));
-  }, [ticker]);
-
-  const handleDaysChange = useCallback(
-    (newDays: number) => {
-      setDays(newDays);
-      setRefreshing(true);
-      load(newDays).finally(() => setRefreshing(false));
-    },
-    [load]
-  );
-
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await load(days);
-    setRefreshing(false);
-  }, [load, days]);
-
-  return (
-    <ThemedView style={styles.container}>
-      <Stack.Screen options={{ title: ticker ?? 'Company' }} />
-
-      {loading ? (
-        <ThemedView style={styles.centered}>
-          <ActivityIndicator size="large" />
-          <ThemedText>Loading {ticker}...</ThemedText>
-        </ThemedView>
-      ) : (
-        <FlatList
-          data={articles}
-          keyExtractor={(item) => String(item.id)}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-          contentContainerStyle={styles.list}
-          ListHeaderComponent={
-            <ThemedView style={styles.headerBlock}>
-              <ThemedText type="title">{sentiment?.name ?? ticker}</ThemedText>
-              {error && <ThemedText style={styles.error}>⚠️ {error}</ThemedText>}
-              <DaysFilter value={days} onChange={handleDaysChange} />
-              {sentiment && (
-                <ThemedView style={styles.scoreRow}>
-                  <ThemedView
-                    style={[styles.badge, { backgroundColor: sentimentColor(sentiment.score) }]}>
-                    <ThemedText style={styles.badgeText}>
-                      {sentimentLabel(sentiment.score)}
-                    </ThemedText>
-                  </ThemedView>
-                  <ThemedText style={styles.meta}>
-                    {sentiment.score !== null ? `Score: ${sentiment.score.toFixed(2)}` : 'Score: —'}{' '}
-                    · {sentiment.article_count} article{sentiment.article_count === 1 ? '' : 's'}
-                  </ThemedText>
-                </ThemedView>
-              )}
-              <ThemedText type="subtitle" style={styles.chartHeading}>
-                Last {days} days
-              </ThemedText>
-              <SentimentChart data={history} width={width - 32} />
-              <ThemedText type="subtitle" style={styles.newsHeading}>
-                Recent headlines
-              </ThemedText>
-            </ThemedView>
-          }
-          renderItem={({ item }) => (
-            <Pressable onPress={() => WebBrowser.openBrowserAsync(item.source_url)}>
-              <ThemedView style={styles.card}>
-                <ThemedText type="defaultSemiBold" numberOfLines={2}>
-                  {item.headline}
-                </ThemedText>
-                <ThemedText style={styles.meta} numberOfLines={2}>
-                  {item.snippet}
-                </ThemedText>
-                <ThemedView style={styles.cardFooter}>
-                  <ThemedText style={styles.meta}>
-                    {item.source} · {formatDate(item.published_at)}
-                  </ThemedText>
-                  {item.label && (
-                    <ThemedView
-                      style={[
-                        styles.badgeSmall,
-                        { backgroundColor: sentimentColor(item.label === 'positive' ? 1 : item.label === 'negative' ? -1 : 0) },
-                      ]}>
-                      <ThemedText style={styles.badgeText}>{item.label}</ThemedText>
-                    </ThemedView>
-                  )}
-                </ThemedView>
-              </ThemedView>
-            </Pressable>
-          )}
-          ListEmptyComponent={
-            <ThemedText style={styles.meta}>No articles ingested for {ticker} yet.</ThemedText>
-          }
-        />
-      )}
-    </ThemedView>
-  );
+function formatTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  } catch {
+    return iso;
+  }
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  centered: {
-    flex: 1,
+  container: { flex: 1, backgroundColor: Colors.bg },
+  header: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: Colors.divider,
   },
-  list: {
-    padding: 16,
-    paddingBottom: 32,
-    gap: 10,
-  },
-  headerBlock: {
-    gap: 8,
-    marginBottom: 12,
-  },
-  scoreRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  chartHeading: {
-    marginTop: 4,
-  },
-  newsHeading: {
-    marginTop: 12,
-  },
-  card: {
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#88888844',
-    gap: 6,
-    marginBottom: 10,
-  },
-  cardFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  badgeSmall: {
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 6,
-  },
-  badgeText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  meta: {
-    fontSize: 12,
-    opacity: 0.7,
-  },
-  error: {
-    color: '#c62828',
-  },
+  headerTitle: { fontFamily: Fonts.heading, fontSize: 15, color: Colors.text },
+  savedBtn: { borderWidth: 2, borderColor: Colors.text, paddingHorizontal: 9, paddingVertical: 7, minHeight: 36, justifyContent: 'center' },
+  savedText: { fontFamily: Fonts.heading, fontSize: 10, letterSpacing: 0.8, color: Colors.text },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  section: { padding: 20, borderBottomWidth: 2, borderBottomColor: Colors.divider },
+  kicker: { fontFamily: Fonts.heading, fontSize: 10, letterSpacing: 1.4, color: Colors.neutral600, marginBottom: 8 },
+  rowBetween: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 },
+  moodRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 14, marginBottom: 6 },
+  moodScore: { fontFamily: Fonts.heading, fontSize: 56, lineHeight: 56, color: Colors.text, letterSpacing: -1.6 },
+  moodPhrase: { fontFamily: Fonts.heading, fontSize: 14, color: Colors.text, textTransform: 'uppercase', letterSpacing: 0.6 },
+  moodMeta: { fontFamily: Fonts.body, fontSize: 11, color: Colors.neutral700, marginTop: 2 },
+  metaSmall: { fontFamily: Fonts.body, fontSize: 11, color: Colors.neutral600 },
+  axisLabel: { fontFamily: Fonts.body, fontSize: 10, color: Colors.neutral600, marginTop: 6 },
+  headlinesKicker: { fontFamily: Fonts.heading, fontSize: 10, letterSpacing: 1.4, color: Colors.neutral600, paddingHorizontal: 20, paddingTop: 18, paddingBottom: 8 },
+  articleRow: { gap: 8, paddingHorizontal: 20, paddingVertical: 15, borderTopWidth: 1, borderTopColor: Colors.neutral300 },
+  articleTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  articleMeta: { fontFamily: Fonts.body, fontSize: 10, color: Colors.neutral600, textTransform: 'uppercase', letterSpacing: 0.5 },
+  headline: { fontFamily: Fonts.heading, fontSize: 16, lineHeight: 20, color: Colors.text, letterSpacing: -0.2 },
+  emptyNote: { fontFamily: Fonts.body, fontSize: 13, color: Colors.neutral700, padding: 20 },
 });

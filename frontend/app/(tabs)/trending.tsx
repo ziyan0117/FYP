@@ -1,209 +1,134 @@
-import { Link } from 'expo-router';
+import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet } from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { DaysFilter } from '@/components/days-filter';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { CompanySentiment, getCompanySentiment, getTrending, TrendingCompany } from '@/constants/api';
+import { Chip } from '@/components/finpulse/Chip';
+import { CompanySentiment, getCompanySentiment, getTopics, getTrending, Topic, TrendingCompany } from '@/constants/api';
+import { Colors, Fonts, sentimentColor, sentimentLabel } from '@/constants/finpulse-theme';
 
-function sentimentColor(score: number | null): string {
-  if (score === null) return '#888888';
-  if (score > 0.15) return '#2e7d32';
-  if (score < -0.15) return '#c62828';
-  return '#f9a825';
-}
+const DAYS = 7;
 
-function sentimentLabel(score: number | null): string {
-  if (score === null) return 'No data';
-  if (score > 0.15) return 'Positive';
-  if (score < -0.15) return 'Negative';
-  return 'Neutral';
-}
-
-function windowLabel(days: number): string {
-  return days === 1 ? 'the last day' : `the last ${days} days`;
-}
-
-type TrendingRow = TrendingCompany & { score: number | null };
+type VolRow = TrendingCompany & { score: number | null };
 
 export default function TrendingScreen() {
-  const [days, setDays] = useState(7);
-  const [items, setItems] = useState<TrendingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [topics, setTopics] = useState<Topic[]>([]);
+  const [volRows, setVolRows] = useState<VolRow[]>([]);
 
-  const load = useCallback(async (selectedDays: number) => {
-    setError(null);
-    try {
-      // Backend ranks by article volume within the selected window -- ask
-      // for enough rows to cover the whole watchlist rather than its
-      // default top-5.
-      const trending = await getTrending(10, selectedDays);
-      const sentiments = await Promise.all(
-        trending.map((t) =>
-          getCompanySentiment(t.ticker, selectedDays).catch<CompanySentiment>(() => ({
-            ticker: t.ticker,
-            name: t.name,
-            score: null,
-            article_count: t.article_count,
-          }))
-        )
-      );
-      const merged: TrendingRow[] = trending.map((t, i) => ({ ...t, score: sentiments[i].score }));
-      setItems(merged);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+  const load = useCallback(async () => {
+    const [topicList, trending] = await Promise.all([getTopics(5, DAYS), getTrending(6, DAYS)]);
+    setTopics(topicList);
+    const sentiments = await Promise.all(
+      trending.map((t) =>
+        getCompanySentiment(t.ticker, DAYS).catch<CompanySentiment>(() => ({
+          ticker: t.ticker,
+          name: t.name,
+          score: null,
+          article_count: t.article_count,
+          prev_score: null,
+        }))
+      )
+    );
+    setVolRows(trending.map((t, i) => ({ ...t, score: sentiments[i].score })));
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    load(days).finally(() => setLoading(false));
-  }, []);
-
-  const handleDaysChange = useCallback(
-    (newDays: number) => {
-      setDays(newDays);
-      setRefreshing(true);
-      load(newDays).finally(() => setRefreshing(false));
-    },
-    [load]
-  );
+    setLoading(true);
+    load().finally(() => setLoading(false));
+  }, [load]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await load(days);
+    await load();
     setRefreshing(false);
-  }, [load, days]);
+  }, [load]);
 
-  if (loading) {
-    return (
-      <ThemedView style={styles.centered}>
-        <ActivityIndicator size="large" />
-        <ThemedText>Loading trending companies...</ThemedText>
-      </ThemedView>
-    );
-  }
+  const maxTopicVol = Math.max(1, ...topics.map((t) => t.article_count));
+  const maxTickerVol = Math.max(1, ...volRows.map((v) => v.article_count));
 
   return (
-    <ThemedView style={styles.container}>
-      <ThemedText type="title" style={styles.header}>
-        Trending
-      </ThemedText>
-      <DaysFilter value={days} onChange={handleDaysChange} />
-      <ThemedText style={styles.meta}>Ranked by news volume in {windowLabel(days)}</ThemedText>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <View style={styles.header}>
+        <Text style={styles.h2}>Trending</Text>
+        <Text style={styles.sub}>What the news is loudest about, last {DAYS} days</Text>
+      </View>
 
-      {error && <ThemedText style={styles.error}>⚠️ {error}</ThemedText>}
-
-      <FlatList
-        data={items}
-        keyExtractor={(item) => item.ticker}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        contentContainerStyle={styles.list}
-        renderItem={({ item, index }) => (
-          // Carry the currently-selected day range along to the company
-          // detail screen so it opens already matching the window you
-          // ranked this list by.
-          <Link
-            href={{
-              pathname: '/company/[ticker]',
-              params: { ticker: item.ticker, days: String(days) },
-            }}
-            asChild>
-            <Pressable>
-              <ThemedView style={styles.card}>
-                <ThemedText style={styles.rank}>#{index + 1}</ThemedText>
-                <ThemedView style={styles.cardBody}>
-                  <ThemedView style={styles.cardRow}>
-                    <ThemedText type="defaultSemiBold">
-                      {item.ticker} · {item.name}
-                    </ThemedText>
-                    <ThemedView
-                      style={[styles.badge, { backgroundColor: sentimentColor(item.score) }]}>
-                      <ThemedText style={styles.badgeText}>
-                        {sentimentLabel(item.score)}
-                      </ThemedText>
-                    </ThemedView>
-                  </ThemedView>
-                  <ThemedText style={styles.meta}>
-                    {item.article_count} article{item.article_count === 1 ? '' : 's'} in{' '}
-                    {windowLabel(days)}
-                  </ThemedText>
-                </ThemedView>
-              </ThemedView>
+      {loading ? (
+        <View style={styles.centered}>
+          <ActivityIndicator color={Colors.text} />
+        </View>
+      ) : (
+        <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.text} />}>
+          <Text style={styles.sectionKicker}>TOPICS</Text>
+          {topics.length === 0 && (
+            <Text style={styles.emptyNote}>Not enough shared coverage yet to cluster a topic.</Text>
+          )}
+          {topics.map((t, i) => (
+            <Pressable
+              key={t.label}
+              onPress={() => t.tickers[0] && router.push(`/company/${t.tickers[0]}`)}
+              style={styles.topicRow}>
+              <Text style={styles.rank}>{String(i + 1).padStart(2, '0')}</Text>
+              <View style={{ flex: 1, gap: 5 }}>
+                <Text style={styles.topicTitle}>{t.label}</Text>
+                <Text style={styles.meta}>
+                  {t.tickers.join(', ')} · {t.article_count} article{t.article_count === 1 ? '' : 's'}
+                </Text>
+                <View style={styles.volTrack}>
+                  <View style={[styles.volFill, { width: `${(t.article_count / maxTopicVol) * 100}%` }]} />
+                </View>
+              </View>
+              <Chip label={sentimentLabel(t.score)} size="small" />
             </Pressable>
-          </Link>
-        )}
-        ListEmptyComponent={
-          <ThemedText style={styles.meta}>No trending data yet — run the ingestion pipeline.</ThemedText>
-        }
-      />
-    </ThemedView>
+          ))}
+
+          <View style={styles.hr} />
+          <Text style={styles.sectionKicker}>TICKERS BY NEWS VOLUME</Text>
+          {volRows.map((v, i) => (
+            <Pressable key={v.ticker} onPress={() => router.push(`/company/${v.ticker}`)} style={styles.volRow}>
+              <Text style={styles.rankSmall}>{String(i + 1).padStart(2, '0')}</Text>
+              <Text style={styles.volTicker}>{v.ticker}</Text>
+              <View style={styles.volRowTrack}>
+                <View
+                  style={[
+                    styles.volRowFill,
+                    { width: `${(v.article_count / maxTickerVol) * 100}%`, backgroundColor: sentimentColor(v.score) },
+                  ]}
+                />
+              </View>
+              <Text style={styles.volCount}>
+                {v.article_count} art{v.article_count === 1 ? '.' : 's'}
+              </Text>
+            </Pressable>
+          ))}
+          <View style={{ height: 24 }} />
+        </ScrollView>
+      )}
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    paddingTop: 60,
-    paddingHorizontal: 16,
-  },
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-  },
-  header: {
-    marginBottom: 12,
-  },
-  list: {
-    paddingTop: 12,
-    paddingBottom: 24,
-    gap: 10,
-  },
-  card: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#88888844',
-  },
-  cardBody: {
-    flex: 1,
-    gap: 4,
-  },
-  rank: {
-    fontSize: 18,
-    fontWeight: '700',
-    opacity: 0.4,
-    minWidth: 32,
-  },
-  cardRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  badgeText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  meta: {
-    fontSize: 12,
-    opacity: 0.7,
-  },
-  error: {
-    color: '#c62828',
-    marginBottom: 8,
-  },
+  container: { flex: 1, backgroundColor: Colors.bg },
+  header: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 14, borderBottomWidth: 2, borderBottomColor: Colors.divider },
+  h2: { fontFamily: Fonts.heading, fontSize: 30, color: Colors.text, letterSpacing: -0.5, marginBottom: 4 },
+  sub: { fontFamily: Fonts.body, fontSize: 12, color: Colors.neutral700 },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  sectionKicker: { fontFamily: Fonts.heading, fontSize: 10, letterSpacing: 1.4, color: Colors.neutral600, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
+  emptyNote: { fontFamily: Fonts.body, fontSize: 12, color: Colors.neutral700, paddingHorizontal: 20, paddingBottom: 12 },
+  topicRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingHorizontal: 20, paddingVertical: 15, minHeight: 76, borderTopWidth: 1, borderTopColor: Colors.neutral300 },
+  rank: { fontFamily: Fonts.heading, fontSize: 15, color: Colors.neutral500, width: 26 },
+  topicTitle: { fontFamily: Fonts.heading, fontSize: 17, lineHeight: 20, color: Colors.text, letterSpacing: -0.2 },
+  meta: { fontFamily: Fonts.body, fontSize: 11, color: Colors.neutral600 },
+  volTrack: { height: 6, backgroundColor: Colors.neutral200, marginTop: 2 },
+  volFill: { height: 6, backgroundColor: Colors.text },
+  hr: { height: 2, backgroundColor: Colors.divider, marginTop: 6 },
+  volRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingVertical: 13, minHeight: 56, borderTopWidth: 1, borderTopColor: Colors.neutral300 },
+  rankSmall: { fontFamily: Fonts.heading, fontSize: 13, color: Colors.neutral500, width: 26 },
+  volTicker: { fontFamily: Fonts.heading, fontSize: 15, width: 62, color: Colors.text },
+  volRowTrack: { flex: 1, height: 10, backgroundColor: Colors.neutral200 },
+  volRowFill: { height: 10 },
+  volCount: { fontFamily: Fonts.body, fontSize: 11, color: Colors.neutral700, width: 58, textAlign: 'right' },
 });

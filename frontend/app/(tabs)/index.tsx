@@ -1,181 +1,258 @@
-import { Link } from 'expo-router';
+import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, ViewStyle } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { DaysFilter } from '@/components/days-filter';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { CompanySentiment, getCompanies, getCompanySentiment } from '@/constants/api';
+import { AlertIcon } from '@/components/finpulse/icons';
+import { Gauge, PolarityBar } from '@/components/finpulse/DataViz';
+import { LinkButton, Button } from '@/components/finpulse/Button';
+import {
+  CompanySentiment,
+  MarketSentiment,
+  getCompanies,
+  getCompanyNews,
+  getCompanySentiment,
+  getMarketSentiment,
+} from '@/constants/api';
+import { marketTakeaway } from '@/constants/copy';
+import { Colors, Fonts, formatDelta, formatScore, sentimentLabel } from '@/constants/finpulse-theme';
+import { useAppState } from '@/contexts/app-state';
 
-function sentimentColor(score: number | null): string {
-  if (score === null) return '#888888';
-  if (score > 0.15) return '#2e7d32'; // positive - green
-  if (score < -0.15) return '#c62828'; // negative - red
-  return '#f9a825'; // roughly neutral - amber
+type Mover = { ticker: string; delta: number; why: string };
+
+function todayLabel(): string {
+  return new Date().toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
 }
 
-function sentimentLabel(score: number | null): string {
-  if (score === null) return 'No data';
-  if (score > 0.15) return 'Positive';
-  if (score < -0.15) return 'Negative';
-  return 'Neutral';
-}
-
-export default function HomeScreen() {
-  const [days, setDays] = useState(7);
-  const [items, setItems] = useState<CompanySentiment[]>([]);
+export default function TodayScreen() {
+  const { tickers } = useAppState();
+  const [days, setDays] = useState(1);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [market, setMarket] = useState<MarketSentiment | null>(null);
+  const [rows, setRows] = useState<(CompanySentiment & { articleTotal: number })[]>([]);
+  const [movers, setMovers] = useState<Mover[]>([]);
 
-  const load = useCallback(async (selectedDays: number) => {
-    setError(null);
-    try {
-      const companies = await getCompanies();
-      // Fetch every company's sentiment in parallel rather than one at a
-      // time -- with a 10-company watchlist this is 10 quick requests
-      // firing together instead of a slow sequential chain.
-      const results = await Promise.all(
-        companies.map((c) => getCompanySentiment(c.ticker, selectedDays))
+  const load = useCallback(
+    async (selectedDays: number) => {
+      const [marketResult, companies] = await Promise.all([getMarketSentiment(selectedDays), getCompanies()]);
+      const picked = tickers ? companies.filter((c) => tickers.includes(c.ticker)) : companies;
+      const sentiments = await Promise.all(
+        picked.map((c) =>
+          getCompanySentiment(c.ticker, selectedDays).catch<CompanySentiment>(() => ({
+            ticker: c.ticker,
+            name: c.name,
+            score: null,
+            article_count: 0,
+            prev_score: null,
+          }))
+        )
       );
-      setItems(results);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
+      setMarket(marketResult);
+      setRows(sentiments.map((s) => ({ ...s, articleTotal: s.article_count })));
 
-  // Initial load only -- day-range changes are handled by handleDaysChange
-  // below, which shows the lighter pull-to-refresh spinner instead of
-  // re-showing the full-screen loading state every time the filter changes.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    load(days).finally(() => setLoading(false));
-  }, []);
-
-  const handleDaysChange = useCallback(
-    (newDays: number) => {
-      setDays(newDays);
-      setRefreshing(true);
-      load(newDays).finally(() => setRefreshing(false));
+      const withDelta = sentiments
+        .filter((s) => s.score !== null && s.prev_score !== null)
+        .map((s) => ({ ticker: s.ticker, delta: s.score! - s.prev_score! }))
+        .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+        .slice(0, 3);
+      const withWhy = await Promise.all(
+        withDelta.map(async (m) => {
+          const headlines = await getCompanyNews(m.ticker, 1, selectedDays).catch(() => []);
+          return { ...m, why: headlines[0]?.headline ?? 'New coverage since the last window' };
+        })
+      );
+      setMovers(withWhy);
     },
-    [load]
+    [tickers]
   );
+
+  useEffect(() => {
+    setLoading(true);
+    load(days).finally(() => setLoading(false));
+  }, [days, load]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await load(days);
     setRefreshing(false);
-  }, [load, days]);
+  }, [days, load]);
 
-  if (loading) {
+  const totalArticles = rows.reduce((sum, r) => sum + r.articleTotal, 0);
+  const isEmpty = !loading && totalArticles === 0 && days === 1;
+
+  if (loading) return <TodaySkeleton />;
+
+  if (isEmpty) {
     return (
-      <ThemedView style={styles.centered}>
-        <ActivityIndicator size="large" />
-        <ThemedText>Loading watchlist...</ThemedText>
-      </ThemedView>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={styles.headerRow}>
+          <Text style={styles.brand}>FINPULSE</Text>
+          <Text style={styles.date}>{todayLabel().toUpperCase()}</Text>
+        </View>
+        <View style={styles.emptyBody}>
+          <View style={styles.emptyIconBox}>
+            <AlertIcon />
+          </View>
+          <Text style={styles.emptyTitle}>Nothing to read yet.</Text>
+          <Text style={styles.emptyCopy}>
+            No articles have come through for your tickers in the last 24 hours. That&apos;s usually a
+            quiet weekend, not a bug.
+          </Text>
+          <View style={styles.hr} />
+          <Button label="Widen to 7 days" onPress={() => setDays(7)} />
+        </View>
+      </SafeAreaView>
     );
   }
 
+  const marketLabel = sentimentLabel(market?.score ?? null);
+  const moodPhrase =
+    marketLabel === 'Positive' ? 'Leaning up' : marketLabel === 'Negative' ? 'Leaning down' : 'Holding flat';
+
   return (
-    <ThemedView style={styles.container}>
-      <ThemedText type="title" style={styles.header}>
-        Watchlist
-      </ThemedText>
-      <DaysFilter value={days} onChange={handleDaysChange} />
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ScrollView refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.text} />}>
+        <View style={styles.headerRow}>
+          <Text style={styles.brand}>FINPULSE</Text>
+          <Text style={styles.date}>{todayLabel().toUpperCase()}</Text>
+        </View>
 
-      {error && <ThemedText style={styles.error}>⚠️ {error}</ThemedText>}
+        <View style={styles.section}>
+          <Text style={styles.kicker}>MARKET MOOD · LAST 24H</Text>
+          <View style={styles.moodRow}>
+            <Text style={styles.moodScore}>{formatScore(market?.score ?? null)}</Text>
+            <View style={{ alignItems: 'flex-end' }}>
+              <Text style={styles.moodPhrase}>{moodPhrase.toUpperCase()}</Text>
+              <Text style={styles.moodMeta}>
+                {market?.article_count ?? 0} articles · {market?.company_count ?? 0} tickers
+              </Text>
+            </View>
+          </View>
+          <Gauge score={market?.score ?? null} />
+        </View>
 
-      <FlatList
-        data={items}
-        keyExtractor={(item) => item.ticker}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        contentContainerStyle={styles.list}
-        renderItem={({ item }) => (
-          // Carry the currently-selected day range along to the company
-          // detail screen (as a string route param -- expo-router params are
-          // always strings) so tapping into a company shows the same window
-          // you were just looking at on the Watchlist, instead of resetting
-          // to the detail screen's own default.
-          <Link
-            href={{
-              pathname: '/company/[ticker]',
-              params: { ticker: item.ticker, days: String(days) },
-            }}
-            asChild>
-            <Pressable>
-              <ThemedView style={styles.card}>
-                <ThemedView style={styles.cardRow}>
-                  <ThemedText type="defaultSemiBold">{item.ticker}</ThemedText>
-                  <ThemedView
-                    style={[styles.badge, { backgroundColor: sentimentColor(item.score) }]}>
-                    <ThemedText style={styles.badgeText}>{sentimentLabel(item.score)}</ThemedText>
-                  </ThemedView>
-                </ThemedView>
-                <ThemedText>{item.name}</ThemedText>
-                <ThemedText style={styles.meta}>
-                  {item.score !== null ? `Score: ${item.score.toFixed(2)}` : 'Score: —'} ·{' '}
-                  {item.article_count} article{item.article_count === 1 ? '' : 's'}
-                </ThemedText>
-              </ThemedView>
-            </Pressable>
-          </Link>
+        <View style={styles.soWhat}>
+          <Text style={styles.soWhatKicker}>SO WHAT</Text>
+          <Text style={styles.soWhatText}>{market ? marketTakeaway(market, rows) : ''}</Text>
+        </View>
+
+        {movers.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.kicker}>BIGGEST SWINGS VS YESTERDAY</Text>
+            {movers.map((m) => {
+              const deltaColor = m.delta >= 0 ? Colors.text : Colors.accent;
+              return (
+                <Pressable
+                  key={m.ticker}
+                  onPress={() => router.push(`/company/${m.ticker}`)}
+                  style={styles.moverRow}>
+                  <Text style={styles.moverTicker}>{m.ticker}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.moverWhy} numberOfLines={2}>
+                      {m.why}
+                    </Text>
+                  </View>
+                  <Text style={[styles.moverDelta, { color: deltaColor }]}>{formatDelta(m.delta)}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
         )}
-        ListEmptyComponent={
-          <ThemedText style={styles.meta}>No companies in the watchlist yet.</ThemedText>
-        }
-      />
-    </ThemedView>
+
+        <View style={styles.section}>
+          <View style={styles.rowBetween}>
+            <Text style={styles.kicker}>YOUR WATCHLIST MOOD</Text>
+            <LinkButton label={`All ${rows.length} →`} onPress={() => router.push('/watchlist')} />
+          </View>
+          {rows.slice(0, 5).map((r) => (
+            <Pressable key={r.ticker} onPress={() => router.push(`/company/${r.ticker}`)} style={styles.stripRow}>
+              <Text style={styles.stripTicker}>{r.ticker}</Text>
+              <PolarityBar score={r.score} style={{ flex: 1 }} />
+              <Text style={[styles.stripScore, { color: r.score !== null ? undefined : Colors.neutral500 }]}>
+                {formatScore(r.score)}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        <View style={{ height: 26 }} />
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function skelBlock(extra: ViewStyle) {
+  return [{ backgroundColor: Colors.neutral300 }, extra];
+}
+
+function TodaySkeleton() {
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <View style={styles.headerRow}>
+        <Text style={styles.brand}>FINPULSE</Text>
+        <Text style={[styles.date, { color: Colors.accentText }]}>SCORING…</Text>
+      </View>
+      <View style={styles.section}>
+        <View style={skelBlock({ width: 120, height: 11, marginBottom: 16 })} />
+        <View style={skelBlock({ width: 190, height: 52, marginBottom: 18 })} />
+        <View style={{ height: 12, backgroundColor: Colors.neutral200 }}>
+          <View style={{ width: '38%', height: 12, backgroundColor: Colors.neutral400 }} />
+        </View>
+      </View>
+      <View style={[styles.section, { backgroundColor: Colors.neutral200 }]}>
+        <View style={skelBlock({ width: 90, height: 9, marginBottom: 12 })} />
+        <View style={skelBlock({ width: '100%', height: 20, marginBottom: 7 })} />
+        <View style={skelBlock({ width: '72%', height: 20 })} />
+      </View>
+      <View style={styles.section}>
+        <View style={skelBlock({ width: 150, height: 9, marginBottom: 18 })} />
+        {[1, 2, 3, 4].map((i) => (
+          <View key={i} style={styles.skelRow}>
+            <View style={skelBlock({ width: 52, height: 16 })} />
+            <View style={[skelBlock({ height: 12 }), { flex: 1 }]} />
+            <View style={skelBlock({ width: 40, height: 16 })} />
+          </View>
+        ))}
+      </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    paddingTop: 60,
-    paddingHorizontal: 16,
-  },
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-  },
-  header: {
-    marginBottom: 12,
-  },
-  list: {
-    paddingTop: 12,
-    paddingBottom: 24,
-    gap: 10,
-  },
-  card: {
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#88888844',
-    gap: 4,
-  },
-  cardRow: {
+  container: { flex: 1, backgroundColor: Colors.bg },
+  headerRow: {
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: Colors.divider,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  badge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  badgeText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  meta: {
-    fontSize: 12,
-    opacity: 0.7,
-  },
-  error: {
-    color: '#c62828',
-    marginBottom: 8,
-  },
+  brand: { fontFamily: Fonts.heading, fontSize: 15, color: Colors.text, letterSpacing: -0.2 },
+  date: { fontFamily: Fonts.body, fontSize: 11, color: Colors.neutral600, letterSpacing: 0.8 },
+  section: { padding: 20, borderBottomWidth: 2, borderBottomColor: Colors.divider },
+  kicker: { fontFamily: Fonts.heading, fontSize: 10, letterSpacing: 1.4, color: Colors.neutral600, marginBottom: 10 },
+  rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
+  moodRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 14 },
+  moodScore: { fontFamily: Fonts.heading, fontSize: 68, lineHeight: 68, color: Colors.text, letterSpacing: -2 },
+  moodPhrase: { fontFamily: Fonts.heading, fontSize: 15, color: Colors.text, textTransform: 'uppercase', letterSpacing: 0.6 },
+  moodMeta: { fontFamily: Fonts.body, fontSize: 11, color: Colors.neutral700, marginTop: 2 },
+  soWhat: { padding: 20, borderBottomWidth: 2, borderBottomColor: Colors.divider, backgroundColor: Colors.accent },
+  soWhatKicker: { fontFamily: Fonts.heading, fontSize: 10, letterSpacing: 1.4, color: 'rgba(243,242,242,0.75)', marginBottom: 8 },
+  soWhatText: { fontFamily: Fonts.heading, fontSize: 22, lineHeight: 27, color: Colors.text, letterSpacing: -0.3 },
+  moverRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, minHeight: 58, borderTopWidth: 1, borderTopColor: Colors.neutral300 },
+  moverTicker: { fontFamily: Fonts.heading, fontSize: 17, width: 58, color: Colors.text },
+  moverWhy: { fontFamily: Fonts.body, fontSize: 13, lineHeight: 17, color: Colors.neutral800 },
+  moverDelta: { fontFamily: Fonts.heading, fontSize: 19 },
+  stripRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, minHeight: 46, borderTopWidth: 1, borderTopColor: Colors.neutral300 },
+  stripTicker: { fontFamily: Fonts.heading, fontSize: 14, width: 58, color: Colors.text },
+  stripScore: { fontFamily: Fonts.heading, fontSize: 12, width: 44, textAlign: 'right', color: Colors.text },
+  emptyBody: { flex: 1, paddingHorizontal: 20, justifyContent: 'center' },
+  emptyIconBox: { width: 46, height: 46, borderWidth: 3, borderColor: Colors.accent, alignItems: 'center', justifyContent: 'center', marginBottom: 20 },
+  emptyTitle: { fontFamily: Fonts.heading, fontSize: 30, color: Colors.text, marginBottom: 12 },
+  emptyCopy: { fontFamily: Fonts.body, fontSize: 14, lineHeight: 22, color: Colors.neutral800, maxWidth: 300, marginBottom: 20 },
+  hr: { height: 2, backgroundColor: Colors.divider, marginBottom: 16 },
+  skelRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderTopWidth: 1, borderTopColor: Colors.neutral300 },
 });

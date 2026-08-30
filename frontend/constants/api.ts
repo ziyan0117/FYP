@@ -48,6 +48,18 @@ export type CompanySentiment = {
   name: string;
   score: number | null;
   article_count: number;
+  // The same aggregation over the window immediately preceding this one
+  // (e.g. days=7 -> the 7 days before that) -- powers "vs yesterday" swing
+  // figures. null when `days` wasn't passed (no well-defined prior window
+  // for an all-time score).
+  prev_score: number | null;
+};
+
+export type MarketSentiment = {
+  score: number | null;
+  article_count: number;
+  company_count: number;
+  prev_score: number | null;
 };
 
 export type Article = {
@@ -59,6 +71,11 @@ export type Article = {
   published_at: string;
   label: string | null;
   confidence: number | null;
+  // FinBERT's three raw class probabilities -- populated whenever label is.
+  prob_positive: number | null;
+  prob_neutral: number | null;
+  prob_negative: number | null;
+  tickers: string[];
 };
 
 export type TrendingCompany = {
@@ -71,6 +88,13 @@ export type SentimentHistoryPoint = {
   date: string; // "YYYY-MM-DD"
   score: number | null;
   article_count: number;
+};
+
+export type Topic = {
+  label: string;
+  tickers: string[];
+  article_count: number;
+  score: number | null;
 };
 
 // ---- Fetch helpers -----------------------------------------------------
@@ -109,4 +133,18 @@ export function getCompanySentimentHistory(
   days = 14
 ): Promise<SentimentHistoryPoint[]> {
   return getJson<SentimentHistoryPoint[]>(`/companies/${ticker}/sentiment/history?days=${days}`);
+}
+
+export function getMarketSentiment(days?: number): Promise<MarketSentiment> {
+  const query = days !== undefined ? `?days=${days}` : '';
+  return getJson<MarketSentiment>(`/market/sentiment${query}`);
+}
+
+export function getTopics(limit = 5, days?: number): Promise<Topic[]> {
+  const daysParam = days !== undefined ? `&days=${days}` : '';
+  return getJson<Topic[]>(`/topics?limit=${limit}${daysParam}`);
+}
+
+export function getArticle(id: number): Promise<Article> {
+  return getJson<Article>(`/articles/${id}`);
 }
