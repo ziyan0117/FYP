@@ -30,6 +30,7 @@ export default function CompanyDetailScreen() {
   const [articles, setArticles] = useState<Article[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!ticker) return;
@@ -69,6 +70,14 @@ export default function CompanyDetailScreen() {
   const oldestDate = history[0]?.date;
   const newestDate = history[history.length - 1]?.date;
   const gapDays = history.filter((p) => p.score === null).map((p) => p.date.slice(5));
+  // Default the tapped-day readout to the most recent day whenever a fresh
+  // history comes in (new ticker, or a pull-to-refresh) -- keeps something
+  // useful showing without requiring a tap first, and resets cleanly
+  // instead of pointing at a date that no longer exists in the new data.
+  useEffect(() => {
+    setSelectedDate(newestDate ?? null);
+  }, [newestDate]);
+  const selectedPoint = history.find((p) => p.date === selectedDate) ?? null;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -111,7 +120,17 @@ export default function CompanyDetailScreen() {
               <Text style={styles.kicker}>DAY BY DAY</Text>
               <Text style={styles.metaSmall}>{HISTORY_DAYS} days</Text>
             </View>
-            <DayByDayChart points={history} />
+            {selectedPoint && (
+              <View style={styles.selectedDayRow}>
+                <Text style={styles.selectedDayDate}>{formatFull(selectedPoint.date)}</Text>
+                <Text style={styles.selectedDayValue}>
+                  {selectedPoint.score !== null
+                    ? `${formatScore(selectedPoint.score)} · ${selectedPoint.article_count} article${selectedPoint.article_count === 1 ? '' : 's'}`
+                    : 'No news that day'}
+                </Text>
+              </View>
+            )}
+            <DayByDayChart points={history} selectedDate={selectedDate} onSelectDay={(p) => setSelectedDate(p.date)} />
             <View style={styles.rowBetween}>
               <Text style={styles.axisLabel}>{oldestDate ? formatShort(oldestDate) : ''}</Text>
               {gapDays.length > 0 && (
@@ -119,6 +138,7 @@ export default function CompanyDetailScreen() {
               )}
               <Text style={styles.axisLabel}>{newestDate ? formatShort(newestDate) : ''}</Text>
             </View>
+            <Text style={styles.tapHint}>Tap a day for the number</Text>
           </View>
 
           <Text style={styles.headlinesKicker}>HEADLINES</Text>
@@ -147,9 +167,28 @@ export default function CompanyDetailScreen() {
   );
 }
 
+// `history[].date` is a bare "YYYY-MM-DD" calendar date (no time/zone --
+// see compute_daily_sentiment_series). `new Date("2026-08-24")` parses
+// date-only strings as UTC midnight per spec, so formatting it back with
+// the *local* timezone can silently roll it back a day west of UTC.
+// Building the Date from its parts instead (the local-time constructor)
+// keeps it the same calendar day everywhere.
+function parseDateOnly(iso: string): Date {
+  const [year, month, day] = iso.split('-').map(Number);
+  return new Date(year, month - 1, day);
+}
+
 function formatShort(iso: string): string {
   try {
-    return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    return parseDateOnly(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  } catch {
+    return iso;
+  }
+}
+
+function formatFull(iso: string): string {
+  try {
+    return parseDateOnly(iso).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
   } catch {
     return iso;
   }
@@ -187,6 +226,15 @@ const styles = StyleSheet.create({
   moodMeta: { fontFamily: Fonts.body, fontSize: 11, color: Colors.neutral700, marginTop: 2 },
   metaSmall: { fontFamily: Fonts.body, fontSize: 11, color: Colors.neutral600 },
   axisLabel: { fontFamily: Fonts.body, fontSize: 10, color: Colors.neutral600, marginTop: 6 },
+  selectedDayRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  selectedDayDate: { fontFamily: Fonts.heading, fontSize: 13, color: Colors.text },
+  selectedDayValue: { fontFamily: Fonts.heading, fontSize: 13, color: Colors.accentText },
+  tapHint: { fontFamily: Fonts.body, fontSize: 10, color: Colors.neutral600, marginTop: 10 },
   headlinesKicker: { fontFamily: Fonts.heading, fontSize: 10, letterSpacing: 1.4, color: Colors.neutral600, paddingHorizontal: 20, paddingTop: 18, paddingBottom: 8 },
   articleRow: { gap: 8, paddingHorizontal: 20, paddingVertical: 15, borderTopWidth: 1, borderTopColor: Colors.neutral300 },
   articleTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },

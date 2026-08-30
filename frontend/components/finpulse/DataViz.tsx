@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View, ViewStyle } from 'react-native';
+import { Pressable, StyleSheet, Text, View, ViewStyle } from 'react-native';
 
 import { Colors, Fonts, sentimentColor } from '@/constants/finpulse-theme';
 import { SentimentHistoryPoint } from '@/constants/api';
@@ -126,26 +126,39 @@ export function SplitBar({
 
 /** Company detail's 14-day sentiment history, split above/below a zero
  * line -- a day with no articles draws as a dotted outline rather than a
- * misleading flat bar at zero. */
-export function DayByDayChart({ points }: { points: SentimentHistoryPoint[] }) {
+ * misleading flat bar at zero. Each day is tappable: `onSelectDay` fires
+ * with that day's point (score/article_count/date) so the caller can show
+ * an annotated readout, and `selectedDate` (if passed back in) highlights
+ * which column is currently selected. */
+export function DayByDayChart({
+  points,
+  selectedDate,
+  onSelectDay,
+}: {
+  points: SentimentHistoryPoint[];
+  selectedDate?: string | null;
+  onSelectDay?: (point: SentimentHistoryPoint) => void;
+}) {
   return (
     <View style={styles.chartWrap}>
       <View style={styles.chartZeroLine} />
       {points.map((p) => {
+        const isSelected = p.date === selectedDate;
+        const colStyle = [styles.chartCol, isSelected && styles.chartColSelected];
         if (p.score === null) {
           return (
-            <View key={p.date} style={styles.chartCol}>
+            <Pressable key={p.date} onPress={() => onSelectDay?.(p)} style={colStyle}>
               <View style={styles.chartPosSlot}>
                 <View style={styles.chartNoNews} />
               </View>
               <View style={styles.chartNegSlot} />
-            </View>
+            </Pressable>
           );
         }
         const barHeight = Math.max(5, Math.min(1, Math.abs(p.score)) * 56);
         const positive = p.score >= 0;
         return (
-          <View key={p.date} style={styles.chartCol}>
+          <Pressable key={p.date} onPress={() => onSelectDay?.(p)} style={colStyle}>
             <View style={styles.chartPosSlot}>
               {positive && <View style={{ width: '100%', height: barHeight, backgroundColor: Colors.text }} />}
             </View>
@@ -154,7 +167,7 @@ export function DayByDayChart({ points }: { points: SentimentHistoryPoint[] }) {
                 <View style={{ width: '100%', height: barHeight, backgroundColor: Colors.accent }} />
               )}
             </View>
-          </View>
+          </Pressable>
         );
       })}
     </View>
@@ -249,6 +262,12 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 130,
     flexDirection: 'column',
+  },
+  // Background tint only (no border) -- a border would eat into the
+  // column's fixed 130px height and nudge its bars out of alignment with
+  // its unselected neighbours.
+  chartColSelected: {
+    backgroundColor: 'rgba(243,242,242,0.12)',
   },
   chartPosSlot: {
     height: 64,
