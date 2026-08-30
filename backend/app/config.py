@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
-NEWSAPI_API_KEY = os.getenv("NEWSAPI_API_KEY", "")  # optional secondary source
+SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")  # optional secondary source (Google News via SerpApi)
 
 # Default to a local SQLite file so the project runs with zero database setup.
 # Point this at a Postgres URL later (e.g. from Supabase/Neon) without changing

@@ -14,6 +14,7 @@ from .models import Company, Article, ArticleCompanyMap, SentimentResult
 from .preprocessing import clean_text, compute_content_hash
 from .ticker_matching import Company as MatchCompany, match_article_to_companies
 from .finnhub_client import fetch_company_news, fetch_general_news
+from .serpapi_client import fetch_company_news_serpapi
 from .sentiment import classify
 
 
@@ -73,6 +74,31 @@ def _store_article(db, raw_item: dict, companies: list[Company], api_symbols: li
     return article
 
 
+def _fetch_all_raw_items(company: Company) -> list[dict]:
+    """
+    Fetch a company's news from every configured source and combine them.
+    Each source is wrapped in its own try/except: SerpApi being unconfigured
+    or erroring should never prevent the Finnhub half of ingestion from
+    running, and vice versa. SerpApi results carry no `related` ticker tags
+    (that's a Finnhub-only feature), so articles sourced from SerpApi are
+    always linked to companies via the keyword-matching fallback in
+    ticker_matching.py, never the "api" match method.
+    """
+    raw_items: list[dict] = []
+
+    try:
+        raw_items.extend(fetch_company_news(company.ticker, NEWS_LOOKBACK_DAYS))
+    except Exception as exc:
+        print(f"  Skipped Finnhub for {company.ticker}: {exc}")
+
+    try:
+        raw_items.extend(fetch_company_news_serpapi(company.name, NEWS_LOOKBACK_DAYS))
+    except Exception as exc:
+        print(f"  Skipped SerpApi for {company.ticker}: {exc}")
+
+    return raw_items
+
+
 def run_ingestion():
     init_db()
     db = SessionLocal()
@@ -85,11 +111,7 @@ def run_ingestion():
 
         for company in companies:
             print(f"Fetching news for {company.ticker}...")
-            try:
-                raw_items = fetch_company_news(company.ticker, NEWS_LOOKBACK_DAYS)
-            except Exception as exc:
-                print(f"  Skipped {company.ticker}: {exc}")
-                continue
+            raw_items = _fetch_all_raw_items(company)
 
             for raw_item in raw_items:
                 api_symbols = [s.strip() for s in raw_item.get("related", "").split(",") if s.strip()]
