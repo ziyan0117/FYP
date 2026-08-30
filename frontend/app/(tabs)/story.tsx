@@ -40,8 +40,18 @@ export default function StoryScreen() {
           .catch(() => [] as StoryArticle[])
       )
     );
-    const flat = pools
-      .flat()
+    // An article can be linked to more than one company (e.g. a headline
+    // mentioning both MSFT and GOOGL), so fetching per-ticker news and
+    // flattening can pull the same article in twice -- dedupe by id before
+    // it reaches the FlatList, or React warns about duplicate keys and the
+    // story stack shows the same headline back to back.
+    const seen = new Set<number>();
+    const deduped = pools.flat().filter((a) => {
+      if (seen.has(a.id)) return false;
+      seen.add(a.id);
+      return true;
+    });
+    const flat = deduped
       .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
       .slice(0, 12);
     setStories(flat);
