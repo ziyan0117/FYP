@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -37,7 +37,10 @@ export default function CompanyDetailScreen() {
     const [sentimentResult, historyResult, newsResult] = await Promise.all([
       getCompanySentiment(ticker, DAYS),
       getCompanySentimentHistory(ticker, HISTORY_DAYS),
-      getCompanyNews(ticker, 6, DAYS),
+      // Fetch across the whole chart window (not just DAYS) and generously
+      // above the chart's typical volume, so tapping any of the 14 bars --
+      // not just the last 7 days -- has real headlines to show underneath.
+      getCompanyNews(ticker, 60, HISTORY_DAYS),
     ]);
     setSentiment(sentimentResult);
     setHistory(historyResult);
@@ -78,6 +81,13 @@ export default function CompanyDetailScreen() {
     setSelectedDate(newestDate ?? null);
   }, [newestDate]);
   const selectedPoint = history.find((p) => p.date === selectedDate) ?? null;
+  // `published_at` is a UTC datetime string and `history[].date` is bucketed
+  // by UTC calendar day (compute_daily_sentiment_series) -- comparing their
+  // date portions directly is correct without any timezone conversion.
+  const dayArticles = useMemo(
+    () => (selectedDate ? articles.filter((a) => a.published_at.slice(0, 10) === selectedDate) : []),
+    [articles, selectedDate]
+  );
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -138,11 +148,13 @@ export default function CompanyDetailScreen() {
               )}
               <Text style={styles.axisLabel}>{newestDate ? formatShort(newestDate) : ''}</Text>
             </View>
-            <Text style={styles.tapHint}>Tap a day for the number</Text>
+            <Text style={styles.tapHint}>Tap a day for its number and headlines</Text>
           </View>
 
-          <Text style={styles.headlinesKicker}>HEADLINES</Text>
-          {articles.map((a) => {
+          <Text style={styles.headlinesKicker}>
+            HEADLINES{selectedDate ? ` · ${formatFull(selectedDate).toUpperCase()}` : ''}
+          </Text>
+          {dayArticles.map((a) => {
             const eff = effectiveLabel(a.label, a.confidence);
             return (
               <Pressable key={a.id} onPress={() => router.push(`/article/${a.id}`)} style={styles.articleRow}>
@@ -159,7 +171,13 @@ export default function CompanyDetailScreen() {
               </Pressable>
             );
           })}
-          {articles.length === 0 && <Text style={styles.emptyNote}>No articles ingested for {ticker} yet.</Text>}
+          {dayArticles.length === 0 && (
+            <Text style={styles.emptyNote}>
+              {articles.length === 0
+                ? `No articles ingested for ${ticker} yet.`
+                : `No headlines for ${selectedDate ? formatFull(selectedDate) : 'this day'} -- tap another day, or one further back.`}
+            </Text>
+          )}
           <View style={{ height: 24 }} />
         </ScrollView>
       )}
