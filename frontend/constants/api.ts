@@ -67,6 +67,12 @@ export type TrendingCompany = {
   article_count: number;
 };
 
+export type SentimentHistoryPoint = {
+  date: string; // "YYYY-MM-DD"
+  score: number | null;
+  article_count: number;
+};
+
 // ---- Fetch helpers -----------------------------------------------------
 
 async function getJson<T>(path: string): Promise<T> {
@@ -91,4 +97,11 @@ export function getCompanyNews(ticker: string, limit = 20): Promise<Article[]> {
 
 export function getTrending(limit = 5): Promise<TrendingCompany[]> {
   return getJson<TrendingCompany[]>(`/trending?limit=${limit}`);
+}
+
+export function getCompanySentimentHistory(
+  ticker: string,
+  days = 14
+): Promise<SentimentHistoryPoint[]> {
+  return getJson<SentimentHistoryPoint[]>(`/companies/${ticker}/sentiment/history?days=${days}`);
 }

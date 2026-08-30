@@ -1,6 +1,6 @@
 """
 FastAPI backend (report Chapter 4/5). Run:
-    uvicorn app.main:app --reload --host 0.0.0.0
+    uvicorn app.main:app --reload
 Then open http://127.0.0.1:8000/docs for interactive API docs (Swagger UI).
 """
 from contextlib import asynccontextmanager
@@ -12,8 +12,14 @@ from sqlalchemy import func
 
 from .database import get_db, init_db
 from .models import Company, Article, ArticleCompanyMap, SentimentResult
-from .schemas import CompanyOut, ArticleOut, CompanySentimentOut, TrendingCompanyOut
-from .aggregation import aggregate_company_sentiment
+from .schemas import (
+    CompanyOut,
+    ArticleOut,
+    CompanySentimentOut,
+    TrendingCompanyOut,
+    SentimentHistoryPoint,
+)
+from .aggregation import aggregate_company_sentiment, compute_daily_sentiment_series
 
 
 @asynccontextmanager
@@ -52,11 +58,11 @@ def _get_company_or_404(db: Session, ticker: str) -> Company:
     return company
 
 
-@app.get("/companies/{ticker}/sentiment", response_model=CompanySentimentOut)
-def company_sentiment(ticker: str, db: Session = Depends(get_db)):
-    """Company-level aggregated sentiment score (Chapter 4/5 aggregation logic)."""
-    company = _get_company_or_404(db, ticker)
-
+def _company_sentiment_results(db: Session, company: Company) -> list[dict]:
+    """Raw {label, confidence, published_at} rows for a company -- the shared
+    input format both aggregate_company_sentiment() and
+    compute_daily_sentiment_series() expect. Factored out since the plain
+    current-score endpoint and the new history endpoint both need it."""
     rows = (
         db.query(SentimentResult, Article.published_at)
         .join(Article, SentimentResult.article_id == Article.id)
@@ -64,12 +70,28 @@ def company_sentiment(ticker: str, db: Session = Depends(get_db)):
         .filter(ArticleCompanyMap.company_id == company.id, SentimentResult.model_name == "finbert")
         .all()
     )
-    results = [
+    return [
         {"label": sr.label, "confidence": sr.confidence, "published_at": published_at}
         for sr, published_at in rows
     ]
+
+
+@app.get("/companies/{ticker}/sentiment", response_model=CompanySentimentOut)
+def company_sentiment(ticker: str, db: Session = Depends(get_db)):
+    """Company-level aggregated sentiment score (Chapter 4/5 aggregation logic)."""
+    company = _get_company_or_404(db, ticker)
+    results = _company_sentiment_results(db, company)
     agg = aggregate_company_sentiment(results)
     return CompanySentimentOut(ticker=company.ticker, name=company.name, **agg)
+
+
+@app.get("/companies/{ticker}/sentiment/history", response_model=list[SentimentHistoryPoint])
+def company_sentiment_history(ticker: str, days: int = 14, db: Session = Depends(get_db)):
+    """Daily sentiment timeline for a company -- FR-12, feeds the mobile app's
+    sentiment-over-time chart and Chapter 6.3's sensitivity evaluation."""
+    company = _get_company_or_404(db, ticker)
+    results = _company_sentiment_results(db, company)
+    return compute_daily_sentiment_series(results, days=days)
 
 
 @app.get("/companies/{ticker}/news", response_model=list[ArticleOut])

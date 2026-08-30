@@ -1,11 +1,26 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet } from 'react-native';
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  useWindowDimensions,
+} from 'react-native';
 
+import { SentimentChart } from '@/components/sentiment-chart';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Article, CompanySentiment, getCompanyNews, getCompanySentiment } from '@/constants/api';
+import {
+  Article,
+  CompanySentiment,
+  SentimentHistoryPoint,
+  getCompanyNews,
+  getCompanySentiment,
+  getCompanySentimentHistory,
+} from '@/constants/api';
 
 function sentimentColor(score: number | null): string {
   if (score === null) return '#888888';
@@ -37,8 +52,10 @@ function formatDate(iso: string): string {
 export default function CompanyDetailScreen() {
   const { ticker } = useLocalSearchParams<{ ticker: string }>();
 
+  const { width } = useWindowDimensions();
   const [sentiment, setSentiment] = useState<CompanySentiment | null>(null);
   const [articles, setArticles] = useState<Article[]>([]);
+  const [history, setHistory] = useState<SentimentHistoryPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,12 +64,14 @@ export default function CompanyDetailScreen() {
     if (!ticker) return;
     setError(null);
     try {
-      const [sentimentResult, newsResult] = await Promise.all([
+      const [sentimentResult, newsResult, historyResult] = await Promise.all([
         getCompanySentiment(ticker),
         getCompanyNews(ticker),
+        getCompanySentimentHistory(ticker, 14),
       ]);
       setSentiment(sentimentResult);
       setArticles(newsResult);
+      setHistory(historyResult);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -101,6 +120,10 @@ export default function CompanyDetailScreen() {
                   </ThemedText>
                 </ThemedView>
               )}
+              <ThemedText type="subtitle" style={styles.chartHeading}>
+                Last 14 days
+              </ThemedText>
+              <SentimentChart data={history} width={width - 32} />
               <ThemedText type="subtitle" style={styles.newsHeading}>
                 Recent headlines
               </ThemedText>
@@ -165,8 +188,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  chartHeading: {
+    marginTop: 4,
+  },
   newsHeading: {
-    marginTop: 8,
+    marginTop: 12,
   },
   card: {
     padding: 14,

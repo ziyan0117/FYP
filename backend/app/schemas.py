@@ -41,3 +41,9 @@ class TrendingCompanyOut(BaseModel):
     ticker: str
     name: str
     article_count: int
+
+
+class SentimentHistoryPoint(BaseModel):
+    date: str  # "YYYY-MM-DD"
+    score: float | None
+    article_count: int
