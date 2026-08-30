@@ -33,6 +33,7 @@ web-build/
 *.p12
 *.key
 *.mobileprovision
+.claude/
 
 # ---- OS junk ----
 .DS_Store

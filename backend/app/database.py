@@ -1,8 +1,3 @@
-"""
-SQLAlchemy engine/session setup. Works unchanged against SQLite (default,
-zero setup) or PostgreSQL (set DATABASE_URL) -- this is the whole point of
-using an ORM rather than hand-written SQL tied to one database engine.
-"""
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 

@@ -73,15 +73,6 @@ def compute_daily_sentiment_series(results: list[dict], days: int = 14) -> list[
     effect within a single day, so this is close to a same-day
     confidence-weighted mean).
 
-    Returns oldest-day-first:
-        [{"date": "YYYY-MM-DD", "score": float | None, "article_count": int}, ...]
-    A day with zero articles gets score=None (not 0.0) so the frontend can
-    render a gap in the line rather than a misleading flat "neutral" point --
-    "no news that day" and "neutral news that day" are different facts.
-
-    This is what report FR-12 (sentiment-over-time) is built on, and what
-    Chapter 6.3's sensitivity check (does one strongly-worded article swing
-    the line?) will run against with real data.
     """
     today = datetime.now(timezone.utc).date()
     start_day = today - timedelta(days=days - 1)

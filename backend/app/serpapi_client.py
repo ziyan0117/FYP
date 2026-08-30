@@ -1,24 +1,3 @@
-"""
-Thin wrapper around SerpApi's Google Search API (https://serpapi.com/search),
-used as an optional secondary news source alongside Finnhub. Requires
-SERPAPI_API_KEY to be set -- copy .env.example to .env and fill it in with
-your key from https://serpapi.com/manage-api-key.
-
-This queries the regular Google Search "News" tab (engine=google, tbm=nws)
-rather than the dedicated google_news engine, since that is the endpoint
-already in use. Unlike Finnhub's /company-news, these results are not
-pre-tagged with related tickers, so every SerpApi-sourced article is linked
-to a company purely by the keyword/alias fallback in ticker_matching.py --
-never the "api" match method. That is a deliberate, documented asymmetry
-between the two sources, not an oversight (see Chapter 4 of the report).
-
-Free-plan note: SerpApi's free tier is capped at 100 searches per *month*,
-not per minute -- one search per watchlist company per ingestion run, so
-re-running ingestion frequently against a large watchlist can exhaust the
-month's quota quickly. This module does not attempt to track that quota
-itself; a 401/429 from SerpApi surfaces as a normal RuntimeError/HTTPError
-that ingest.py already catches per-company.
-"""
 import re
 from datetime import datetime, timedelta, timezone
 

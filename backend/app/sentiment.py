@@ -1,12 +1,3 @@
-"""
-FinBERT wrapper. Loads the pretrained model once (lazily, cached) and
-classifies text, returning the full probability distribution -- not just
-the top label -- since aggregation and the "why" explanation feature both
-need it.
-
-This is the production version of finbert_poc/sentiment_poc.py from the
-earlier proof-of-concept, extended to return all three class probabilities.
-"""
 from functools import lru_cache
 
 MODEL_NAME = "ProsusAI/finbert"

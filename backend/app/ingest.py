@@ -1,11 +1,3 @@
-"""
-Ingestion orchestration: for each watchlist company, fetch news, preprocess,
-match to companies, classify sentiment, and store everything. Also pulls
-general market news for broader coverage.
-
-Run directly:
-    python -m app.ingest
-"""
 from datetime import datetime, timezone
 
 from .config import NEWS_LOOKBACK_DAYS
