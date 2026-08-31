@@ -38,3 +38,4 @@ web-build/
 # ---- OS junk ----
 .DS_Store
 Thumbs.db
+/finbert_poc

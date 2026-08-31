@@ -13,7 +13,7 @@ preprocessing yet — those come in later steps.
 - `test_finbert_utils.py` — offline tests using a fake classifier, so you can
   sanity-check the logic before pointing it at the real (large, slow-to-load)
   model. Already run once — all 3 pass.
-- `requirements.txt` — the two packages you need.
+- `requirements.txt` — the packages you need.
 
 ## How to run
 
@@ -88,8 +88,60 @@ run somewhere with normal internet access (your own machine or Colab).
   out a bug in the surrounding code; if that passes, the issue is specific to
   the real model call — share the exact output and we'll debug it together.
 
-## Once this runs cleanly for you
+---
 
-Come back and tell me it's working (or paste the output/error if it isn't),
-and we'll move to the next step: pulling real headlines from the Finnhub
-news API and running them through this same classifier.
+# Step 2 — comparing FinBERT against VADER and TextBlob
+
+Backs the "planned comparison baselines" described in the project report
+(Chapter 6.2 / Chapter 7): actually runs FinBERT, VADER, and TextBlob against
+the same small, manually labelled sample of financial headlines and scores
+all three the same way.
+
+## Files
+
+- `compare_models.py` — main script. Loads all three models, classifies
+  every headline in `labelled_headlines.py`, scores each model, prints a
+  metrics table + confusion matrix + disagreement list per model, and writes
+  `comparison_results.csv`.
+- `labelled_headlines.py` — 20 hand-labelled headlines (positive/neutral/
+  negative), including a few chosen specifically because they contain
+  finance vocabulary ("tax", "liability", "vice") that general-purpose
+  lexicons are known to misread — see the file's own docstring.
+- `metrics.py` — pure-Python accuracy / confusion-matrix / precision-recall-
+  F1 / score-bucketing logic, with no scikit-learn dependency, so it (and its
+  tests) run without installing any of the three sentiment models.
+- `test_metrics.py` — 9 offline tests for `metrics.py`, hand-checked against
+  manually computed expected values. Already run in the cloud sandbox where
+  this was written (all 9 pass) — installing FinBERT/VADER/TextBlob there is
+  blocked by the same restricted network noted above, so `compare_models.py`
+  itself (the part that needs those three libraries) is unverified until run
+  on your machine.
+
+## How to run
+
+```bash
+cd finbert_poc
+pip install -r requirements.txt
+python compare_models.py
+```
+
+This reuses the same FinBERT model as `sentiment_poc.py` (and the same one
+the production `backend/app/sentiment.py` uses), so if you've already run
+`sentiment_poc.py` once, the model is already cached and this will load fast.
+
+## What to look at in the output
+
+The per-model accuracy/macro-F1 numbers are a start, but the **disagreement
+list** at the end is usually more useful for the report: it shows exactly
+which headlines each model got wrong, including whether VADER/TextBlob
+tripped on one of the finance-vocabulary "trap" headlines the way the
+literature review predicts they would. `comparison_results.csv` has every
+model's prediction for every headline, ready to drop into a table or chart
+in the evaluation chapter.
+
+## Verify the tests yourself
+
+```bash
+pip install pytest   # if you don't already have it
+pytest test_metrics.py -v
+```
